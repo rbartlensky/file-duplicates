@@ -1,0 +1,17 @@
+[package]
+name = "file-duplicates"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fdup"
+path = "./src/main.rs"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1.3"
+byte-unit = { version = "4.0", default-features = false }
+num_cpus = "1.0"
+pico-args = "0.4.2"
+rlimit = "0.8.3"
+walkdir = "2"
