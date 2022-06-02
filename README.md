@@ -9,12 +9,14 @@ that can find duplicate files on disk based on hashing the contents of files.
 
 Features:
  * multi-threaded search
+ * interactive removal of duplicates (tried it out a couple of times, but
+ I would still consider it in an alpha stage until I try it out on some larger
+ input)
  * skip small files
  * low memory footprint
  * small dependency tree (and fast compile times)
 
 Future goals:
- * interactive removal of duplicates
  * more performance optimisations
  * more filters
 
