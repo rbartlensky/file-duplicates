@@ -99,7 +99,7 @@ fn interactive_removal(
                 let mut read = true;
                 while read {
                     print!(
-                        "(1) {} (size {})\n(2) {} (size {})\nRemove (0 to skip): ",
+                        "(1) {} (size {})\n(2) {} (size {})\nRemove (s to skip): ",
                         path1.display(),
                         format_bytes(*size1),
                         path2.display(),
@@ -116,7 +116,7 @@ fn interactive_removal(
                     println!();
                     read = false;
                     match choice.trim() {
-                        "0" => {
+                        "s" => {
                             i = j + 1;
                             j += 2;
                         }
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn remove_none() {
-        let dir = do_removal(b"0\n");
+        let dir = do_removal(b"s\n");
         let files = [("a", true), ("a2", true)];
         do_check(dir.path(), &files);
     }
