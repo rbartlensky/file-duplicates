@@ -1,9 +1,10 @@
-use file_duplicates::Params;
+use file_duplicates::{HashDb, Params};
+use std::path::PathBuf;
 
 use std::io::Write;
 
 const HELP: &str = "\
-fdup 0.2 -- Find duplicate files based on their hash.
+fdup 0.3 -- Find duplicate files based on their hash.
 
 USAGE:
   fdup [FLAGS] [OPTIONS] ROOT
@@ -12,6 +13,7 @@ FLAGS:
   -r, --remove             Interactively remove duplicate files.
 OPTIONS:
   -l, --lower-limit LIMIT  Files whose size is under <LIMIT> are ignored [default: 1 MiB].
+  --database        PATH   Path to the hash database [default: $HOME/.config/fdup.db].
 ARGS:
   <ROOT>                   Where to start the search from.
 ";
@@ -33,6 +35,16 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
         .opt_value_from_fn(["-l", "--lower-limit"], |s| byte_unit::Byte::from_str(s))?
         .map(|b| b.get_bytes())
         .unwrap_or_else(|| byte_unit::n_mib_bytes(1) as u64);
+
+    // fallback to `$HOME/.config/fdup.db` if `--database` is not present
+    let db = match pargs
+        .opt_value_from_os_str::<_, _, &str>("--database", |s| Ok(PathBuf::from(s)))?
+    {
+        Some(db) => db,
+        None => home::home_dir().map(|h| h.join(".config").join("fdup.db")).ok_or(
+            pico_args::Error::OptionWithoutAValue("`--database` is required if $HOME is not set"),
+        )?,
+    };
     let mut interactive_removal = false;
 
     let mut free = pargs.free_from_str::<String>()?;
@@ -40,7 +52,7 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
         interactive_removal = true;
         free = pargs.free_from_str::<String>()?;
     }
-    let params = Params { lower_limit, root: free.into() };
+    let params = Params { lower_limit, root: free.into(), db };
     let remaining = pargs.finish();
     if !remaining.is_empty() {
         Err(pico_args::Error::ArgumentParsingFailed {
@@ -58,14 +70,13 @@ fn format_bytes(bytes: u64) -> String {
 fn print_stats(stats: file_duplicates::Stats) {
     let mut dup_bytes = 0;
     println!("The following duplicate files have been found:");
-    for (hash, paths) in stats.duplicates {
+    for ((size, hash), paths) in stats.duplicates {
+        dup_bytes += paths.len() as u64 * size;
         if paths.len() > 1 {
             println!("Hash: {}", hash);
-            for (size, path) in &paths {
-                println!("-> size: {}, file: '{}'", format_bytes(*size), path.display());
-                dup_bytes += size;
+            for path in &paths {
+                println!("-> size: {}, file: '{}'", format_bytes(size), path.display());
             }
-            dup_bytes -= paths[0].0;
         }
     }
     println!(
@@ -76,34 +87,38 @@ fn print_stats(stats: file_duplicates::Stats) {
     println!("Duplicate files take up {} of space on disk.", format_bytes(dup_bytes));
 }
 
-fn remove_file(path: &std::path::Path) {
+fn remove_file(path: &std::path::Path, db: &HashDb) {
     if let Err(e) = std::fs::remove_file(path) {
         eprintln!("failed to remove '{}': {}", path.display(), e);
+    } else {
+        db.remove(path).unwrap();
     }
 }
 
 fn interactive_removal(
+    db: PathBuf,
     stats: file_duplicates::Stats,
     mut stdin: impl std::io::BufRead,
 ) -> std::io::Result<()> {
-    for (hash, mut paths) in stats.duplicates {
+    let db = file_duplicates::HashDb::try_new(db).unwrap();
+    for ((size, hash), mut paths) in stats.duplicates {
         if paths.len() > 1 {
             println!("Hash: {}", hash);
             paths.sort();
             let mut i = 0;
             let mut j = 1;
             while i < j && j < paths.len() {
-                let (size1, path1) = &paths[i];
-                let (size2, path2) = &paths[j];
+                let path1 = &paths[i];
+                let path2 = &paths[j];
                 let mut choice = String::with_capacity(3);
                 let mut read = true;
                 while read {
                     print!(
                         "(1) {} (size {})\n(2) {} (size {})\nRemove (s to skip): ",
                         path1.display(),
-                        format_bytes(*size1),
+                        format_bytes(size),
                         path2.display(),
-                        format_bytes(*size2),
+                        format_bytes(size),
                     );
                     if let Err(e) = std::io::stdout().flush() {
                         eprintln!("failed to flush to stdout: {}", e);
@@ -121,12 +136,12 @@ fn interactive_removal(
                             j += 2;
                         }
                         "1" => {
-                            remove_file(path1);
+                            remove_file(path1, &db);
                             i = j;
                             j += 1;
                         }
                         "2" => {
-                            remove_file(path2);
+                            remove_file(path2, &db);
                             j += 1;
                         }
                         _ => read = true,
@@ -147,7 +162,7 @@ fn main() -> anyhow::Result<()> {
     println!("Directory: '{}'", args.params.root.display());
     let stats = file_duplicates::find(&args.params)?;
     if args.interactive_removal {
-        interactive_removal(stats, std::io::stdin().lock())?;
+        interactive_removal(args.params.db, stats, std::io::stdin().lock())?;
     } else {
         print_stats(stats);
     }
@@ -158,7 +173,13 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    use std::{fs::File, io::Cursor, path::Path};
+    use std::{fs::File, io::Cursor};
+    use tempfile::{NamedTempFile, TempDir};
+
+    struct Context {
+        dir: TempDir,
+        db: NamedTempFile,
+    }
 
     fn build_tree(files: &[(&str, &[u8])]) -> tempfile::TempDir {
         let tmpdir = tempfile::tempdir().unwrap();
@@ -169,40 +190,48 @@ mod tests {
         tmpdir
     }
 
-    fn do_removal(choice: &[u8]) -> tempfile::TempDir {
+    fn do_removal(choice: &[u8]) -> Context {
         let dir = build_tree(&[("a", b"a"), ("a2", b"a")]);
-        let stats =
-            file_duplicates::find(&Params { lower_limit: 0, root: dir.path().to_owned() }).unwrap();
+        let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let stats = file_duplicates::find(&Params {
+            lower_limit: 0,
+            root: dir.path().to_owned(),
+            db: db.path().to_owned(),
+        })
+        .unwrap();
         let input = Cursor::new(choice);
-        interactive_removal(stats, input).unwrap();
-        dir
+        interactive_removal(db.path().to_owned(), stats, input).unwrap();
+        Context { dir, db }
     }
 
-    fn do_check(dir: &Path, files: &[(&str, bool)]) {
+    fn do_check(ctx: Context, files: &[(&str, bool)]) {
+        let db = HashDb::try_new(ctx.db.path()).unwrap();
         for (file, exists) in files {
-            let file = dir.join(file);
+            let file = ctx.dir.path().join(file);
             assert_eq!(file.exists(), *exists, "{:?}", file);
+            // also check if the db got updated properly
+            assert_eq!(db.select(&file).unwrap().is_some(), *exists);
         }
     }
 
     #[test]
     fn remove_file_1() {
-        let dir = do_removal(b"1\n");
+        let ctx = do_removal(b"1\n");
         let files = [("a", false), ("a2", true)];
-        do_check(dir.path(), &files);
+        do_check(ctx, &files);
     }
 
     #[test]
     fn remove_file_2() {
-        let dir = do_removal(b"2\n");
+        let ctx = do_removal(b"2\n");
         let files = [("a", true), ("a2", false)];
-        do_check(dir.path(), &files);
+        do_check(ctx, &files);
     }
 
     #[test]
     fn remove_none() {
-        let dir = do_removal(b"s\n");
+        let ctx = do_removal(b"s\n");
         let files = [("a", true), ("a2", true)];
-        do_check(dir.path(), &files);
+        do_check(ctx, &files);
     }
 }

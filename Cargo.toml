@@ -11,9 +11,13 @@ path = "./src/main.rs"
 anyhow = "1"
 blake3 = "1.3"
 byte-unit = { version = "4.0", default-features = false }
+filetime = "0.2"
+home = "0.5"
 num_cpus = "1.0"
 pico-args = "0.4"
 rlimit = "0.8"
+# adds quite a bit to our compile times, but they are still manageable
+rusqlite = { version = "0.27", features = ["bundled"] }
 walkdir = "2"
 
 [dev-dependencies]

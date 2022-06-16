@@ -7,11 +7,12 @@
 //! ```no_run
 //! use file_duplicates::{find, Params};
 //!
-//! let params = Params { lower_limit: 0, root: "./".into() };
+//! let params = Params { lower_limit: 0, root: "./".into(), db: "test.db".into() };
 //! let stats = find(&params).unwrap();
 //! ```
 
 use blake3::Hash;
+use filetime::FileTime;
 use std::{
     collections::{
         hash_map::Entry::{Occupied, Vacant},
@@ -24,6 +25,9 @@ use std::{
 };
 use walkdir::WalkDir;
 
+mod db;
+pub use db::{Entry, HashDb};
+
 /// Used to configure the [find] function.
 pub struct Params {
     /// If the size of the file is under `lower_limit` bytes, it is not taken
@@ -31,9 +35,11 @@ pub struct Params {
     pub lower_limit: u64,
     /// Where to start the search from.
     pub root: PathBuf,
+    /// Where to store the hash database.
+    pub db: PathBuf,
 }
 
-pub type Duplicates = HashMap<Hash, Vec<(u64, PathBuf)>>;
+pub type Duplicates = HashMap<(u64, Hash), Vec<PathBuf>>;
 
 /// Useful stats about a successful [find] operation.
 pub struct Stats {
@@ -58,8 +64,9 @@ pub fn find(params: &Params) -> io::Result<Stats> {
     let mut threads = VecDeque::with_capacity(num_threads);
     for _ in 0..num_threads {
         let (thread_tx, thread_rx) = mpsc::sync_channel(fds / num_threads);
+        let db = params.db.clone();
         let tx = tx.clone();
-        let handle = std::thread::spawn(move || hasher_task(thread_rx, tx));
+        let handle = std::thread::spawn(move || hasher_task(db, thread_rx, tx));
         threads.push_back((handle, thread_tx));
     }
     let collector = std::thread::spawn(|| collect(rx));
@@ -79,18 +86,20 @@ pub fn find(params: &Params) -> io::Result<Stats> {
         if path.is_dir() || path.is_symlink() {
             continue;
         }
-        let size = match path.metadata() {
-            Ok(md) => md.len(),
+        let md = match path.metadata() {
+            Ok(md) => md,
             Err(e) => {
                 eprintln!("io error when reading metadata {}: {}", path.display(), e);
                 continue;
             }
         };
 
+        let size = md.len();
         // TODO: other filters?
         if size < params.lower_limit {
             continue;
         }
+        let mtime = FileTime::from_last_modification_time(&md);
 
         let mut file = match File::open(&path) {
             Ok(f) => f,
@@ -108,9 +117,9 @@ pub fn find(params: &Params) -> io::Result<Stats> {
                 // round-robin
                 let tx = &threads[next_worker].1;
                 next_worker = (next_worker + 1) % num_threads;
-                match tx.try_send((path, file)) {
+                match tx.try_send((path, file, mtime)) {
                     Ok(()) => break 'outer,
-                    Err(mpsc::TrySendError::Full((p, f))) => {
+                    Err(mpsc::TrySendError::Full((p, f, _))) => {
                         path = p;
                         file = f;
                     }
@@ -128,7 +137,7 @@ pub fn find(params: &Params) -> io::Result<Stats> {
     // XXX: why doesn't rust "drop in place" rx if I use `_`?
     for (t, rx) in threads {
         drop(rx);
-        t.join().expect("failed to join with thread");
+        t.join().expect("failed to join with thread").expect("db operation failed");
     }
     Ok(Stats {
         duplicates: collector.join().expect("failed to join with collector"),
@@ -156,19 +165,37 @@ fn hash_file(file: File) -> io::Result<(u64, Hash)> {
 }
 
 fn hasher_task(
-    tasks: Receiver<(PathBuf, File)>,
+    db: PathBuf,
+    tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
-) {
-    while let Ok((path, file)) = tasks.recv() {
-        if tx.send((path, hash_file(file))).is_err() {
+) -> rusqlite::Result<()> {
+    // each task has a connection to our db
+    let db = db::HashDb::try_new(db)?;
+    while let Ok((path, file, mtime)) = tasks.recv() {
+        let res = match db.select(&path)? {
+            // we found a matching file, so we don't need to compute the hash
+            Some(entry) if entry.mtime == mtime.unix_seconds() => Ok((entry.size, entry.hash)),
+            // we need to compute the hash and update our db
+            _ => {
+                let res = hash_file(file);
+                if let Ok((size, hash)) = res {
+                    db.insert(&db::Entry { path: &path, mtime: mtime.unix_seconds(), size, hash })?;
+                    res
+                } else {
+                    res
+                }
+            }
+        };
+        if tx.send((path, res)).is_err() {
             eprintln!("failed to send hash, quiting...");
             break;
         }
     }
+    Ok(())
 }
 
 fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
-    let mut entries: HashMap<Hash, Vec<(u64, PathBuf)>> = HashMap::new();
+    let mut entries: Duplicates = HashMap::new();
     while let Ok((path, res)) = rx.recv() {
         let (size, hash) = match res {
             Ok(h) => h,
@@ -177,10 +204,10 @@ fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
                 continue;
             }
         };
-        match entries.entry(hash) {
-            Occupied(mut v) => v.get_mut().push((size, path)),
+        match entries.entry((size, hash)) {
+            Occupied(mut v) => v.get_mut().push(path),
             Vacant(v) => {
-                v.insert(vec![(size, path)]);
+                v.insert(vec![path]);
             }
         }
     }

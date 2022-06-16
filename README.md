@@ -2,6 +2,10 @@
 
 A quick way to find out if you have duplicate files in a directory.
 
+`fdup` stores computed hashes on disk, so that if you run the command again
+there is no need to recompute hashes for files that haven't changed since the
+last run.
+
 ## Goals
 
 The goals of this project are very straightforward: build an efficient tool
@@ -9,12 +13,12 @@ that can find duplicate files on disk based on hashing the contents of files.
 
 Features:
  * multi-threaded search
- * interactive removal of duplicates (tried it out a couple of times, but
- I would still consider it in an alpha stage until I try it out on some larger
- input)
+ * interactive removal of duplicates
  * skip small files
  * low memory footprint
- * small dependency tree (and fast compile times)
+ * small-ish dependency tree (and fast compile times)
+ ** sqlite is the slowest to compile since we bundle it
+ * hash storage for fast re-runs
 
 Future goals:
  * more performance optimisations
