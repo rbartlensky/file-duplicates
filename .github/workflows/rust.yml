@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - uses: EmbarkStudios/cargo-deny-action@v1
+      with:
+        log-level: error
+        command: check
+        arguments: --all-features
+        command-arguments: ""
     - name: Format checks
       run: cargo fmt --check
     - name: Run clippy
