@@ -19,7 +19,6 @@ jobs:
     - name: Run clippy
       run: cargo clippy -- -D warnings
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --release --verbose --features rusqlite/bundled
     - name: Run tests
-      run: cargo test --verbose
-      id: tests
+      run: cargo test --release --verbose --features rusqlite/bundled

@@ -17,7 +17,6 @@ Features:
  * skip small files
  * low memory footprint
  * small-ish dependency tree (and fast compile times)
- ** sqlite is the slowest to compile since we bundle it
  * hash storage for fast re-runs
 
 Future goals:
@@ -53,4 +52,14 @@ Make sure to run with `--help` for a more detailed description.
 
 ## Building
 
-Like with any cargo project, use `cargo build` to build the project.
+If you have `libsqlite3` installed, you can compile the project as follows:
+
+```
+$ cargo build --release
+```
+
+However, if you don't want to install `libsqlite3`, then you can run:
+
+```
+$ cargo build --release --features rusqlite/bundled
+```

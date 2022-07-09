@@ -16,8 +16,7 @@ home = "0.5"
 num_cpus = "1.0"
 pico-args = "0.5"
 rlimit = "0.8"
-# adds quite a bit to our compile times, but they are still manageable
-rusqlite = { version = "0.27", features = ["bundled"] }
+rusqlite = "0.27"
 walkdir = "2"
 
 [dev-dependencies]
