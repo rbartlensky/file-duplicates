@@ -1,16 +1,19 @@
 use file_duplicates::{HashDb, Params};
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Write};
 
 const HELP: &str = "\
-fdup 0.3 -- Find duplicate files based on their hash.
+fdup 0.4 -- Find duplicate files based on their hash.
 
 USAGE:
   fdup [FLAGS] [OPTIONS] ROOT
 FLAGS:
-  -h, --help               Prints help information.
-  -r, --remove             Interactively remove duplicate files.
+  -h, --help                   Prints help information.
+  -r, --remove                 Interactively remove duplicate files.
+  --remove-with-same-filename  Remove duplicate files that have the same filename.
+  --remove-paranoid            Remove duplicate files, but also check if they have the same content.
 OPTIONS:
   -l, --lower-limit LIMIT  Files whose size is under <LIMIT> are ignored [default: 1 MiB].
   --database        PATH   Path to the hash database [default: $HOME/.config/fdup.db].
@@ -18,8 +21,14 @@ ARGS:
   <ROOT>                   Where to start the search from.
 ";
 
+enum RemovalKind {
+    Interactive,
+    SameFilename,
+    Paranoid,
+}
+
 struct Args {
-    interactive_removal: bool,
+    remove: Option<RemovalKind>,
     params: Params,
 }
 
@@ -45,21 +54,42 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
             pico_args::Error::OptionWithoutAValue("`--database` is required if $HOME is not set"),
         )?,
     };
-    let mut interactive_removal = false;
+    let mut remove = None;
 
     let mut free = pargs.free_from_str::<String>()?;
     if free == "--remove" || free == "-r" {
-        interactive_removal = true;
+        remove = Some(RemovalKind::Interactive);
         free = pargs.free_from_str::<String>()?;
     }
+    if free == "--remove-with-same-filename" {
+        let old = remove.replace(RemovalKind::SameFilename);
+        if old.is_some() {
+            return Err(pico_args::Error::ArgumentParsingFailed {
+                cause: "'--remove-with-same-filename' conflicts with '--remove/-r'".into(),
+            });
+        }
+        free = pargs.free_from_str::<String>()?;
+    }
+    if free == "--remove-paranoid" {
+        let old = remove.replace(RemovalKind::Paranoid);
+        if old.is_some() {
+            return Err(pico_args::Error::ArgumentParsingFailed {
+                cause:
+                    "'--remove-paranoid' conflicts with '--remove/-r/--remove-with-same-filename'"
+                        .into(),
+            });
+        }
+        free = pargs.free_from_str::<String>()?;
+    }
+
     let params = Params { lower_limit, root: free.into(), db };
     let remaining = pargs.finish();
     if !remaining.is_empty() {
         Err(pico_args::Error::ArgumentParsingFailed {
-            cause: format!(": unknown arguments {:?}", remaining),
+            cause: format!("unknown arguments {:?}", remaining),
         })
     } else {
-        Ok(Some(Args { params, interactive_removal }))
+        Ok(Some(Args { params, remove }))
     }
 }
 
@@ -99,7 +129,7 @@ fn interactive_removal(
     db: PathBuf,
     stats: file_duplicates::Stats,
     mut stdin: impl std::io::BufRead,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let db = file_duplicates::HashDb::try_new(db).unwrap();
     for ((size, hash), mut paths) in stats.duplicates {
         if paths.len() > 1 {
@@ -153,6 +183,74 @@ fn interactive_removal(
     Ok(())
 }
 
+fn same_filename_removal(db: PathBuf, stats: file_duplicates::Stats) {
+    let db = file_duplicates::HashDb::try_new(db).unwrap();
+    for (_, mut paths) in stats.duplicates {
+        if paths.len() > 1 {
+            paths.sort();
+            for dup_path in &paths[1..] {
+                if dup_path.file_name() == paths[0].file_name() {
+                    println!(
+                        "Removing '{}' (duplicate of '{}')",
+                        dup_path.display(),
+                        paths[0].display()
+                    );
+                    remove_file(dup_path, &db);
+                }
+            }
+        }
+    }
+}
+
+fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
+    let mut reader1 = BufReader::new(File::open(p1)?);
+    let mut reader2 = BufReader::new(File::open(p2)?);
+    loop {
+        // XXX: put the other one in another thread?
+        let data1 = reader1.fill_buf()?;
+        let data2 = reader2.fill_buf()?;
+        if data1 != data2 {
+            return Ok(false);
+        }
+        if data1.is_empty() {
+            break;
+        }
+        let len1 = data1.len();
+        reader1.consume(len1);
+        let len2 = data2.len();
+        reader2.consume(len2);
+    }
+    Ok(true)
+}
+
+fn paranoid_removal(db: PathBuf, stats: file_duplicates::Stats) {
+    let db = file_duplicates::HashDb::try_new(db).unwrap();
+    for (_, mut paths) in stats.duplicates {
+        if paths.len() > 1 {
+            paths.sort();
+            for dup_path in &paths[1..] {
+                match same_content(&paths[0], dup_path) {
+                    Ok(true) => {
+                        println!(
+                            "Removing '{}' (duplicate of '{}')",
+                            dup_path.display(),
+                            paths[0].display()
+                        );
+                        remove_file(dup_path, &db);
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!(
+                        "failed to compare '{}' to '{}': {:?}",
+                        dup_path.display(),
+                        paths[0].display(),
+                        e
+                    ),
+                }
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args = match parse_args()? {
         Some(args) => args,
@@ -161,10 +259,13 @@ fn main() -> anyhow::Result<()> {
 
     println!("Directory: '{}'", args.params.root.display());
     let stats = file_duplicates::find(&args.params)?;
-    if args.interactive_removal {
-        interactive_removal(args.params.db, stats, std::io::stdin().lock())?;
-    } else {
-        print_stats(stats);
+    match args.remove {
+        Some(RemovalKind::Interactive) => {
+            interactive_removal(args.params.db, stats, std::io::stdin().lock())?
+        }
+        Some(RemovalKind::SameFilename) => same_filename_removal(args.params.db, stats),
+        Some(RemovalKind::Paranoid) => paranoid_removal(args.params.db, stats),
+        None => print_stats(stats),
     }
     Ok(())
 }
@@ -173,25 +274,34 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    use std::{fs::File, io::Cursor};
+    use std::{fs::File, io::Cursor, path::Path};
     use tempfile::{NamedTempFile, TempDir};
+
+    type Files<'a> = [(&'a str, &'a [u8])];
 
     struct Context {
         dir: TempDir,
         db: NamedTempFile,
     }
 
-    fn build_tree(files: &[(&str, &[u8])]) -> tempfile::TempDir {
-        let tmpdir = tempfile::tempdir().unwrap();
+    fn build_tree(dir: &Path, files: &Files<'_>) {
         for (path, data) in files {
-            let mut file = File::create(tmpdir.path().join(path)).unwrap();
+            let mut file = File::create(dir.join(path)).unwrap();
             file.write_all(data).unwrap();
+        }
+    }
+
+    fn build_nested_tree(files: &[(&str, &Files<'_>)]) -> tempfile::TempDir {
+        let tmpdir = tempfile::tempdir().unwrap();
+        for (dir, files) in files {
+            let dir = tmpdir.path().join(dir);
+            std::fs::create_dir(&dir).unwrap();
+            build_tree(&dir, files);
         }
         tmpdir
     }
 
-    fn do_removal(choice: &[u8]) -> Context {
-        let dir = build_tree(&[("a", b"a"), ("a2", b"a")]);
+    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, file_duplicates::Stats)) -> Context {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         let stats = file_duplicates::find(&Params {
             lower_limit: 0,
@@ -199,9 +309,17 @@ mod tests {
             db: db.path().to_owned(),
         })
         .unwrap();
-        let input = Cursor::new(choice);
-        interactive_removal(db.path().to_owned(), stats, input).unwrap();
+        f(db.path(), stats);
         Context { dir, db }
+    }
+
+    fn do_removal(choice: &[u8]) -> Context {
+        let dir = tempfile::tempdir().unwrap();
+        build_tree(dir.path(), &[("a", b"a"), ("a2", b"a")]);
+        do_remove(dir, |db, stats| {
+            let input = Cursor::new(choice);
+            interactive_removal(db.to_owned(), stats, input).unwrap();
+        })
     }
 
     fn do_check(ctx: Context, files: &[(&str, bool)]) {
@@ -233,5 +351,40 @@ mod tests {
         let ctx = do_removal(b"s\n");
         let files = [("a", true), ("a2", true)];
         do_check(ctx, &files);
+    }
+
+    #[test]
+    fn same_filenames_deleted() {
+        let dir = build_nested_tree(&[
+            ("a", &[("a1", b"a1"), ("b", b"b")]),
+            ("b", &[("a2", b"a1"), ("b", b"b")]),
+        ]);
+        let ctx = do_remove(dir, |db, stats| same_filename_removal(db.to_owned(), stats));
+        let files = [("a/a1", true), ("a/b", true), ("b/a2", true), ("b/b", false)];
+        do_check(ctx, &files);
+    }
+
+    #[test]
+    fn paranoid_removal_removes_duplicates() {
+        let dir = build_nested_tree(&[
+            ("a", &[("a1", b"a1"), ("b", b"b")]),
+            ("b", &[("a2", b"a1"), ("b", b"b")]),
+        ]);
+        let ctx = do_remove(dir, |db, stats| paranoid_removal(db.to_owned(), stats));
+        let files = [("a/a1", true), ("a/b", true), ("b/a2", false), ("b/b", false)];
+        do_check(ctx, &files);
+    }
+
+    #[test]
+    fn same_content_works() {
+        let dir = tempfile::tempdir().unwrap();
+        build_tree(dir.path(), &[("a", b"a"), ("a2", b"a"), ("a3", b"b")]);
+        let a = dir.path().join("a");
+        let a2 = dir.path().join("a2");
+        let a3 = dir.path().join("a3");
+        assert!(same_content(&a, &a2).unwrap());
+        assert!(!same_content(&a, &a3).unwrap());
+        assert!(!same_content(&a2, &a3).unwrap());
+        assert!(same_content(&a3, &a3).unwrap());
     }
 }

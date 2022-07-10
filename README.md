@@ -14,6 +14,7 @@ that can find duplicate files on disk based on hashing the contents of files.
 Features:
  * multi-threaded search
  * interactive removal of duplicates
+ * paranoid removal of duplicates (non-interactive, but with extra checks)
  * skip small files
  * low memory footprint
  * small-ish dependency tree (and fast compile times)
@@ -46,6 +47,13 @@ Hash: 784e6aa2a21a83d03f485578e226125049c6e37c23a5c5e43a43b64bf10a8df3
 (2) ./target/release/build/typenum-4dfd976f69348bc2/build_script_main-4dfd976f69348bc2 (size 3.81 MiB)
 Remove (s to skip): 2
 < ... >
+
+$ cargo run --release -- --remove-paranoid ./
+Directory: './'
+Removing './target/debug/build/typenum-49065dcd09f9f9be/build_script_main-49065dcd09f9f9be' (duplicate of './target/debug/build/typenum-49065dcd09f9f9be/build-script-main')
+Removing './target/release/build/blake3-8c51f49d09775f5e/build_script_build-8c51f49d09775f5e' (duplicate of './target/release/build/blake3-8c51f49d09775f5e/build-script-build')
+Removing './target/debug/build/libsqlite3-sys-bf2b891d7da6434b/build_script_build-bf2b891d7da6434b' (duplicate of './target/debug/build/libsqlite3-sys-bf2b891d7da6434b/build-script-build')
+<...>
 ```
 
 Make sure to run with `--help` for a more detailed description.
