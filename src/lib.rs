@@ -121,7 +121,8 @@ pub fn find(params: &Params) -> io::Result<Stats> {
                     Ok(()) => break 'outer,
                     // if a thread crashed, we continue on, since we'll
                     // see the error after we process all files
-                    Err(mpsc::TrySendError::Full((p, f, _))) | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
+                    Err(mpsc::TrySendError::Full((p, f, _)))
+                    | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
                         path = p;
                         file = f;
                     }
