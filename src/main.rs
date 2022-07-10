@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::io::{self, BufRead, BufReader, Write};
 
 const HELP: &str = "\
-fdup 0.4 -- Find duplicate files based on their hash.
+fdup 0.4.1 -- Find duplicate files based on their hash.
 
 USAGE:
   fdup [FLAGS] [OPTIONS] ROOT

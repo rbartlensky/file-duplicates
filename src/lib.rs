@@ -119,15 +119,11 @@ pub fn find(params: &Params) -> io::Result<Stats> {
                 next_worker = (next_worker + 1) % num_threads;
                 match tx.try_send((path, file, mtime)) {
                     Ok(()) => break 'outer,
-                    Err(mpsc::TrySendError::Full((p, f, _))) => {
+                    // if a thread crashed, we continue on, since we'll
+                    // see the error after we process all files
+                    Err(mpsc::TrySendError::Full((p, f, _))) | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
                         path = p;
                         file = f;
-                    }
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "application didn't behave correctly",
-                        ))
                     }
                 }
             }
@@ -169,6 +165,8 @@ fn hasher_task(
     tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
 ) -> rusqlite::Result<()> {
+    use rusqlite::{ffi, Error};
+
     // each task has a connection to our db
     let db = db::HashDb::try_new(db)?;
     while let Ok((path, file, mtime)) = tasks.recv() {
@@ -179,7 +177,17 @@ fn hasher_task(
             _ => {
                 let res = hash_file(file);
                 if let Ok((size, hash)) = res {
-                    db.insert(&db::Entry { path: &path, mtime: mtime.unix_seconds(), size, hash })?;
+                    let entry = db::Entry { path: &path, mtime: mtime.unix_seconds(), size, hash };
+                    while let Err(e) = db.insert(&entry) {
+                        match e {
+                            // we want to retry when database is busy
+                            Error::SqliteFailure(
+                                ffi::Error { code: ffi::ErrorCode::DatabaseBusy, extended_code: 5 },
+                                _,
+                            ) => std::thread::yield_now(),
+                            _ => return Err(e),
+                        }
+                    }
                     res
                 } else {
                     res
