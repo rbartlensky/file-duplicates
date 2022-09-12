@@ -101,8 +101,8 @@ fn print_stats(stats: file_duplicates::Stats) {
     let mut dup_bytes = 0;
     println!("The following duplicate files have been found:");
     for ((size, hash), paths) in stats.duplicates {
-        dup_bytes += paths.len() as u64 * size;
         if paths.len() > 1 {
+            dup_bytes += paths.len() as u64 * size;
             println!("Hash: {}", hash);
             for path in &paths {
                 println!("-> size: {}, file: '{}'", format_bytes(size), path.display());
