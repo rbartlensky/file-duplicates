@@ -1,8 +1,8 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{ffi, params, Connection, Error, Result};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Entry<'p> {
     pub path: &'p Path,
     pub mtime: i64,
@@ -71,6 +71,22 @@ DO UPDATE SET mtime = excluded.mtime, hash = excluded.hash, size = excluded.size
             })
         })?;
         iter.next().transpose()
+    }
+}
+
+pub fn retry_on_busy<F, T>(mut f: F) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    loop {
+        match f() {
+            // we want to retry when database is busy
+            Err(Error::SqliteFailure(
+                ffi::Error { code: ffi::ErrorCode::DatabaseBusy, extended_code: 5 },
+                _,
+            )) => std::thread::yield_now(),
+            e => return e,
+        }
     }
 }
 

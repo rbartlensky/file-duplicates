@@ -28,13 +28,16 @@ use walkdir::WalkDir;
 mod db;
 pub use db::{Entry, HashDb};
 
+use crate::db::retry_on_busy;
+
 /// Used to configure the [find] function.
+#[derive(Debug)]
 pub struct Params {
     /// If the size of the file is under `lower_limit` bytes, it is not taken
     /// into account.
     pub lower_limit: u64,
     /// Where to start the search from.
-    pub root: PathBuf,
+    pub roots: Vec<PathBuf>,
     /// Where to store the hash database.
     pub db: PathBuf,
 }
@@ -75,60 +78,62 @@ pub fn find(params: &Params) -> io::Result<Stats> {
     let mut total_files_processed = 0;
     let mut total_bytes_processed = 0;
     let mut next_worker = 0;
-    for entry in WalkDir::new(&params.root) {
-        let mut path = match entry {
-            Ok(p) => p.into_path(),
-            Err(e) => {
-                eprintln!("io error occured: {}", e);
+    for root in &params.roots {
+        for entry in WalkDir::new(root) {
+            let mut path = match entry {
+                Ok(p) => p.into_path(),
+                Err(e) => {
+                    eprintln!("io error occured: {}", e);
+                    continue;
+                }
+            };
+            if path.is_dir() || path.is_symlink() {
                 continue;
             }
-        };
-        if path.is_dir() || path.is_symlink() {
-            continue;
-        }
-        let md = match path.metadata() {
-            Ok(md) => md,
-            Err(e) => {
-                eprintln!("io error when reading metadata {}: {}", path.display(), e);
+            let md = match path.metadata() {
+                Ok(md) => md,
+                Err(e) => {
+                    eprintln!("io error when reading metadata {}: {}", path.display(), e);
+                    continue;
+                }
+            };
+
+            let size = md.len();
+            // TODO: other filters?
+            if size < params.lower_limit {
                 continue;
             }
-        };
+            let mtime = FileTime::from_last_modification_time(&md);
 
-        let size = md.len();
-        // TODO: other filters?
-        if size < params.lower_limit {
-            continue;
-        }
-        let mtime = FileTime::from_last_modification_time(&md);
+            let mut file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("failed to open {}: {}", path.display(), e);
+                    continue;
+                }
+            };
 
-        let mut file = match File::open(&path) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("failed to open {}: {}", path.display(), e);
-                continue;
-            }
-        };
-
-        total_files_processed += 1;
-        total_bytes_processed += size;
-        'outer: loop {
-            for _ in 0..threads.len() {
-                // we want to have each thread doing something, hence why we go
-                // round-robin
-                let tx = &threads[next_worker].1;
-                next_worker = (next_worker + 1) % num_threads;
-                match tx.try_send((path, file, mtime)) {
-                    Ok(()) => break 'outer,
-                    // if a thread crashed, we continue on, since we'll
-                    // see the error after we process all files
-                    Err(mpsc::TrySendError::Full((p, f, _)))
-                    | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
-                        path = p;
-                        file = f;
+            total_files_processed += 1;
+            total_bytes_processed += size;
+            'outer: loop {
+                for _ in 0..threads.len() {
+                    // we want to have each thread doing something, hence why we go
+                    // round-robin
+                    let tx = &threads[next_worker].1;
+                    next_worker = (next_worker + 1) % num_threads;
+                    match tx.try_send((path, file, mtime)) {
+                        Ok(()) => break 'outer,
+                        // if a thread crashed, we continue on, since we'll
+                        // see the error after we process all files
+                        Err(mpsc::TrySendError::Full((p, f, _)))
+                        | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
+                            path = p;
+                            file = f;
+                        }
                     }
                 }
+                std::thread::yield_now();
             }
-            std::thread::yield_now();
         }
     }
     // XXX: why doesn't rust "drop in place" rx if I use `_`?
@@ -166,12 +171,10 @@ fn hasher_task(
     tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
 ) -> rusqlite::Result<()> {
-    use rusqlite::{ffi, Error};
-
     // each task has a connection to our db
     let db = db::HashDb::try_new(db)?;
     while let Ok((path, file, mtime)) = tasks.recv() {
-        let res = match db.select(&path)? {
+        let res = match retry_on_busy(|| db.select(&path))? {
             // we found a matching file, so we don't need to compute the hash
             Some(entry) if entry.mtime == mtime.unix_seconds() => Ok((entry.size, entry.hash)),
             // we need to compute the hash and update our db
@@ -179,16 +182,7 @@ fn hasher_task(
                 let res = hash_file(file);
                 if let Ok((size, hash)) = res {
                     let entry = db::Entry { path: &path, mtime: mtime.unix_seconds(), size, hash };
-                    while let Err(e) = db.insert(&entry) {
-                        match e {
-                            // we want to retry when database is busy
-                            Error::SqliteFailure(
-                                ffi::Error { code: ffi::ErrorCode::DatabaseBusy, extended_code: 5 },
-                                _,
-                            ) => std::thread::yield_now(),
-                            _ => return Err(e),
-                        }
-                    }
+                    retry_on_busy(|| db.insert(&entry))?;
                     res
                 } else {
                     res

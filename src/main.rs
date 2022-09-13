@@ -8,7 +8,7 @@ const HELP: &str = "\
 fdup 0.4.1 -- Find duplicate files based on their hash.
 
 USAGE:
-  fdup [FLAGS] [OPTIONS] ROOT
+  fdup [FLAGS] [OPTIONS] PATH...
 FLAGS:
   -h, --help                   Prints help information.
   -r, --remove                 Interactively remove duplicate files.
@@ -18,15 +18,36 @@ OPTIONS:
   -l, --lower-limit LIMIT  Files whose size is under <LIMIT> are ignored [default: 1 MiB].
   --database        PATH   Path to the hash database [default: $HOME/.config/fdup.db].
 ARGS:
-  <ROOT>                   Where to start the search from.
+  <PATH...>                Where to start the search from (can be specified multiple times).
 ";
 
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 enum RemovalKind {
     Interactive,
     SameFilename,
     Paranoid,
 }
 
+impl RemovalKind {
+    fn as_option(&self) -> &'static str {
+        match self {
+            RemovalKind::Interactive => "--remove",
+            RemovalKind::SameFilename => "--remove-with-same-filename",
+            RemovalKind::Paranoid => "--remove-paranoid",
+        }
+    }
+
+    fn from_option(opt: &str) -> Option<Self> {
+        match opt {
+            "--remove" | "-r" => Some(RemovalKind::Interactive),
+            "--remove-with-same-filename" => Some(RemovalKind::SameFilename),
+            "--remove-paranoid" => Some(RemovalKind::Paranoid),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Args {
     remove: Option<RemovalKind>,
     params: Params,
@@ -51,44 +72,54 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
     {
         Some(db) => db,
         None => home::home_dir().map(|h| h.join(".config").join("fdup.db")).ok_or(
-            pico_args::Error::OptionWithoutAValue("`--database` is required if $HOME is not set"),
+            pico_args::Error::OptionWithoutAValue("'--database' is required if $HOME is not set"),
         )?,
     };
-    let mut remove = None;
-
-    let mut free = pargs.free_from_str::<String>()?;
-    if free == "--remove" || free == "-r" {
-        remove = Some(RemovalKind::Interactive);
-        free = pargs.free_from_str::<String>()?;
-    }
-    if free == "--remove-with-same-filename" {
-        let old = remove.replace(RemovalKind::SameFilename);
-        if old.is_some() {
-            return Err(pico_args::Error::ArgumentParsingFailed {
-                cause: "'--remove-with-same-filename' conflicts with '--remove/-r'".into(),
-            });
-        }
-        free = pargs.free_from_str::<String>()?;
-    }
-    if free == "--remove-paranoid" {
-        let old = remove.replace(RemovalKind::Paranoid);
-        if old.is_some() {
-            return Err(pico_args::Error::ArgumentParsingFailed {
-                cause:
-                    "'--remove-paranoid' conflicts with '--remove/-r/--remove-with-same-filename'"
-                        .into(),
-            });
-        }
-        free = pargs.free_from_str::<String>()?;
-    }
-
-    let params = Params { lower_limit, root: free.into(), db };
     let remaining = pargs.finish();
-    if !remaining.is_empty() {
+    let mut remove = None;
+    let mut roots: Vec<PathBuf> = vec![];
+    for arg in &remaining {
+        // if we can't parse the argument as UTF-8, we will just assume we are dealing with a PATH argument
+        if let Some(arg) = arg.to_str() {
+            if let Some(kind) = RemovalKind::from_option(arg) {
+                // did we process a root already? if so, then we have something like
+                // "./foo --remove ./bar" which is incorrect
+                if !roots.is_empty() {
+                    return Err(pico_args::Error::ArgumentParsingFailed {
+                        cause: format!(
+                            "cannot specify '{}' after a <PATH> argument",
+                            kind.as_option()
+                        ),
+                    });
+                }
+                let old = remove.replace(kind);
+                match old {
+                    Some(inner_kind) if inner_kind == kind => {
+                        return Err(pico_args::Error::ArgumentParsingFailed {
+                            cause: format!("'{}' passed multiple times", kind.as_option()),
+                        })
+                    }
+                    Some(inner_kind) => {
+                        return Err(pico_args::Error::ArgumentParsingFailed {
+                            cause: format!(
+                                "'{}' conflicts with '{}'",
+                                kind.as_option(),
+                                inner_kind.as_option()
+                            ),
+                        })
+                    }
+                    None => continue,
+                }
+            }
+        }
+        roots.push(arg.into());
+    }
+    if roots.is_empty() {
         Err(pico_args::Error::ArgumentParsingFailed {
-            cause: format!("unknown arguments {:?}", remaining),
+            cause: "'<PATH>' argument is missing".into(),
         })
     } else {
+        let params = Params { lower_limit, roots, db };
         Ok(Some(Args { params, remove }))
     }
 }
@@ -256,8 +287,7 @@ fn main() -> anyhow::Result<()> {
         Some(args) => args,
         None => return Ok(()),
     };
-
-    println!("Directory: '{}'", args.params.root.display());
+    println!("Directories: {:?}", args.params.roots);
     let stats = file_duplicates::find(&args.params)?;
     match args.remove {
         Some(RemovalKind::Interactive) => {
@@ -305,7 +335,7 @@ mod tests {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         let stats = file_duplicates::find(&Params {
             lower_limit: 0,
-            root: dir.path().to_owned(),
+            roots: vec![dir.path().to_owned()],
             db: db.path().to_owned(),
         })
         .unwrap();
