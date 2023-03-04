@@ -63,7 +63,7 @@ pub fn find(params: &Params) -> io::Result<Stats> {
     // give some leeway so that we don't hit the limit by accident
     let fds = rlimit::getrlimit(rlimit::Resource::NOFILE)?.0 as usize - 4 * num_threads;
 
-    let (tx, rx) = mpsc::sync_channel(fds as usize);
+    let (tx, rx) = mpsc::sync_channel(fds);
     let mut threads = VecDeque::with_capacity(num_threads);
     for _ in 0..num_threads {
         let (thread_tx, thread_rx) = mpsc::sync_channel(fds / num_threads);

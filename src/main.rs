@@ -64,7 +64,7 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
     let lower_limit = pargs
         .opt_value_from_fn(["-l", "--lower-limit"], |s| byte_unit::Byte::from_str(s))?
         .map(|b| b.get_bytes())
-        .unwrap_or_else(|| byte_unit::n_mib_bytes(1) as u64);
+        .unwrap_or_else(|| byte_unit::n_mib_bytes(1));
 
     // fallback to `$HOME/.config/fdup.db` if `--database` is not present
     let db = match pargs
