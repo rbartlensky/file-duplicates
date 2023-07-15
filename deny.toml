@@ -33,6 +33,11 @@ multiple-versions = "deny"
 wildcards = "allow"
 highlight = "all"
 
+# until https://github.com/alexcrichton/filetime/commit/ed8558c5e6d3ae2dfde8a7214e52e9e4ad6e349d is released
+[[bans.skip]]
+name = "redox_syscall"
+version = "=0.2.16"
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
