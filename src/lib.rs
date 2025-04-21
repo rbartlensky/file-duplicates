@@ -7,7 +7,7 @@
 //! ```no_run
 //! use file_duplicates::{find, Params};
 //!
-//! let params = Params { lower_limit: 0, root: "./".into(), db: "test.db".into() };
+//! let params = Params { lower_limit: 0, roots: vec!["./".into()], db: "test.db".into() };
 //! let stats = find(&params).unwrap();
 //! ```
 
@@ -150,7 +150,7 @@ pub fn find(params: &Params) -> io::Result<Stats> {
 
 fn hash_file(file: File) -> io::Result<(u64, Hash)> {
     // blake3 docs suggest a 16 KiB buffer for best performance
-    let mut reader = BufReader::with_capacity(byte_unit::n_kib_bytes(16) as usize, file);
+    let mut reader = BufReader::with_capacity(16 * 1024 * 1024, file);
     let mut hasher = blake3::Hasher::new();
     let mut size = 0;
     loop {

@@ -10,13 +10,13 @@ path = "./src/main.rs"
 [dependencies]
 anyhow = "1"
 blake3 = "1"
-byte-unit = { version = "4.0", default-features = false, features = ["alloc"] }
+byte-unit = "5"
 filetime = "0.2"
 home = "0.5"
 num_cpus = "1"
 pico-args = "0.5"
-rlimit = "0.9"
-rusqlite = "0.28"
+rlimit = "0.10"
+rusqlite = "0.35"
 walkdir = "2"
 
 [dev-dependencies]

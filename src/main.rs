@@ -62,9 +62,9 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
     }
 
     let lower_limit = pargs
-        .opt_value_from_fn(["-l", "--lower-limit"], |s| byte_unit::Byte::from_str(s))?
-        .map(|b| b.get_bytes())
-        .unwrap_or_else(|| byte_unit::n_mib_bytes(1));
+        .opt_value_from_fn(["-l", "--lower-limit"], |s| byte_unit::Byte::parse_str(s, false))?
+        .map(|b| b.as_u64())
+        .unwrap_or_else(|| 1 * 1024);
 
     // fallback to `$HOME/.config/fdup.db` if `--database` is not present
     let db = match pargs
@@ -125,7 +125,9 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
 }
 
 fn format_bytes(bytes: u64) -> String {
-    byte_unit::Byte::from_bytes(bytes).get_appropriate_unit(true).format(2)
+    let unit = byte_unit::Byte::from_u64(bytes).get_appropriate_unit(byte_unit::UnitType::Binary);
+
+    format!("{unit:.2}")
 }
 
 fn print_stats(stats: file_duplicates::Stats) {
