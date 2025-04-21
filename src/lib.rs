@@ -7,7 +7,7 @@
 //! ```no_run
 //! use file_duplicates::{find, Params};
 //!
-//! let params = Params { lower_limit: 0, roots: vec!["./".into()], db: "test.db".into() };
+//! let params = Params::new(0, vec!["./".into()], "test.db".into());
 //! let stats = find(&params).unwrap();
 //! ```
 
