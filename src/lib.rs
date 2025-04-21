@@ -54,6 +54,18 @@ impl Params {
     pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> Self {
         Self { lower_limit, roots, db }
     }
+
+    /// Get the roots that this instance was initialized with.
+    ///
+    /// A root is a path where searching starts from.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// Get the path to the database.
+    pub fn db_path(&self) -> &Path {
+        &self.db
+    }
 }
 
 pub type Duplicates = HashMap<(u64, Hash), Vec<PathBuf>>;
