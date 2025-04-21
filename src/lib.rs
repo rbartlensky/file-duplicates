@@ -20,7 +20,7 @@ use std::{
     },
     fs::File,
     io::{self, BufRead, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, SyncSender},
 };
 use walkdir::WalkDir;
@@ -35,11 +35,11 @@ use crate::db::retry_on_busy;
 pub struct Params {
     /// If the size of the file is under `lower_limit` bytes, it is not taken
     /// into account.
-    pub lower_limit: u64,
+    lower_limit: u64,
     /// Where to start the search from.
-    pub roots: Vec<PathBuf>,
+    roots: Vec<PathBuf>,
     /// Where to store the hash database.
-    pub db: PathBuf,
+    db: PathBuf,
 }
 
 impl Params {
