@@ -42,6 +42,20 @@ pub struct Params {
     pub db: PathBuf,
 }
 
+impl Params {
+    /// Create a new instance of [`Params`].
+    ///
+    /// # Arguments
+    ///
+    /// * `lower_limit` - If the size of the file is under `lower_limit` bytes, it is not taken
+    ///                   into account.
+    /// * `root` - Where to start the search from.
+    /// * `db` - Where to store the hash database.
+    pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> Self {
+        Self { lower_limit, roots, db }
+    }
+}
+
 pub type Duplicates = HashMap<(u64, Hash), Vec<PathBuf>>;
 
 /// Useful stats about a successful [find] operation.
