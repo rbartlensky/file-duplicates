@@ -21,7 +21,9 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
     sync::mpsc::{self, Receiver, SyncSender},
+    sync::Arc,
 };
 use walkdir::WalkDir;
 
@@ -40,6 +42,8 @@ pub struct Params {
     roots: Vec<PathBuf>,
     /// Where to store the hash database.
     db: PathBuf,
+    /// The total number of files processed at a particular moment in time.
+    total_files_processed: Arc<AtomicUsize>,
 }
 
 impl Params {
@@ -52,7 +56,7 @@ impl Params {
     /// * `root` - Where to start the search from.
     /// * `db` - Where to store the hash database.
     pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> Self {
-        Self { lower_limit, roots, db }
+        Self { lower_limit, roots, db, total_files_processed: Default::default() }
     }
 
     /// Get the roots that this instance was initialized with.
@@ -65,6 +69,11 @@ impl Params {
     /// Get the path to the database.
     pub fn db_path(&self) -> &Path {
         &self.db
+    }
+
+    /// Get the total number of files that have been processed until now.
+    pub fn total_files_processed(&self) -> usize {
+        self.total_files_processed.load(Ordering::Acquire)
     }
 }
 
