@@ -159,7 +159,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
 name = "duped"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "byte-unit",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "duped-cli"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "byte-unit",
