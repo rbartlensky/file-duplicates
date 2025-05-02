@@ -21,9 +21,11 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::mpsc::{self, Receiver, SyncSender},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+        Arc,
+    },
 };
 use walkdir::WalkDir;
 
@@ -44,6 +46,9 @@ pub struct Params {
     db: PathBuf,
     /// The total number of files processed at a particular moment in time.
     total_files_processed: Arc<AtomicUsize>,
+    /// Sending side of a channel used to notify the caller that the total number
+    /// of files has been incremented.
+    file_processed_tx: SyncSender<()>,
 }
 
 impl Params {
@@ -55,8 +60,22 @@ impl Params {
     ///                   into account.
     /// * `root` - Where to start the search from.
     /// * `db` - Where to store the hash database.
-    pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> Self {
-        Self { lower_limit, roots, db, total_files_processed: Default::default() }
+    ///
+    /// # Returns
+    ///
+    /// The first member of the tuple is the instance, and the second is a receiver that can be used to wait until a
+    /// new file has been processed during a [`find`] operation.
+    pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> (Self, Receiver<()>) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let this = Self {
+            lower_limit,
+            roots,
+            db,
+            total_files_processed: Default::default(),
+            file_processed_tx: tx,
+        };
+
+        (this, rx)
     }
 
     /// Get the roots that this instance was initialized with.

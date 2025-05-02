@@ -119,7 +119,8 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
             cause: "'<PATH>' argument is missing".into(),
         })
     } else {
-        let params = Params::new(lower_limit, roots, db);
+        // TODO: do something with the receiver.
+        let (params, _) = Params::new(lower_limit, roots, db);
         Ok(Some(Args { params, remove }))
     }
 }
