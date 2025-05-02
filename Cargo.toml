@@ -1,23 +1,6 @@
-[package]
-name = "file-duplicates"
-version = "0.4.1"
-edition = "2021"
-
-[[bin]]
-name = "fdup"
-path = "./src/main.rs"
-
-[dependencies]
-anyhow = "1"
-blake3 = "1"
-byte-unit = "5"
-filetime = "0.2"
-home = "0.5"
-num_cpus = "1"
-pico-args = "0.5"
-rlimit = "0.10"
-rusqlite = "0.35"
-walkdir = "2"
-
-[dev-dependencies]
-tempfile = "3"
+[workspace]
+resolver = "2"
+members = [
+    "file-duplicates",
+    "file-duplicates-cli",
+]

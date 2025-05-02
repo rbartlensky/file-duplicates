@@ -1,0 +1,18 @@
+[package]
+name = "file-duplicates-cli"
+version = "0.4.1"
+edition = "2021"
+
+[[bin]]
+name = "fdup"
+path = "./src/main.rs"
+
+[dependencies]
+anyhow = "1"
+byte-unit = "5"
+file-duplicates.path = "../file-duplicates"
+home = "0.5"
+pico-args = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
