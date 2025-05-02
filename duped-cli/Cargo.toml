@@ -1,16 +1,16 @@
 [package]
-name = "file-duplicates-cli"
+name = "duped-cli"
 version = "0.4.1"
 edition = "2021"
 
 [[bin]]
-name = "fdup"
+name = "duped"
 path = "./src/main.rs"
 
 [dependencies]
 anyhow = "1"
 byte-unit = "5"
-file-duplicates.path = "../file-duplicates"
+duped.path = "../duped"
 home = "0.5"
 pico-args = "0.5"
 

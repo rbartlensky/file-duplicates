@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "file-duplicates",
-    "file-duplicates-cli",
+    "duped",
+    "duped-cli",
 ]

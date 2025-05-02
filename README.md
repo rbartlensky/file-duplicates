@@ -1,4 +1,4 @@
-# file-duplicates
+# duped
 
 A quick way to find out if you have duplicate files in a directory.
 

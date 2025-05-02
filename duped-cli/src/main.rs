@@ -1,11 +1,11 @@
-use file_duplicates::{HashDb, Params};
+use duped::{HashDb, Params};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use std::io::{self, BufRead, BufReader, Write};
 
 const HELP: &str = "\
-fdup 0.4.1 -- Find duplicate files based on their hash.
+duped 0.4.1 -- Find duplicate files based on their hash.
 
 USAGE:
   fdup [FLAGS] [OPTIONS] PATH...
@@ -130,7 +130,7 @@ fn format_bytes(bytes: u64) -> String {
     format!("{unit:.2}")
 }
 
-fn print_stats(stats: file_duplicates::Stats) {
+fn print_stats(stats: duped::Stats) {
     let mut dup_bytes = 0;
     println!("The following duplicate files have been found:");
     for ((size, hash), paths) in stats.duplicates {
@@ -160,10 +160,10 @@ fn remove_file(path: &std::path::Path, db: &HashDb) {
 
 fn interactive_removal(
     db: &Path,
-    stats: file_duplicates::Stats,
+    stats: duped::Stats,
     mut stdin: impl std::io::BufRead,
 ) -> io::Result<()> {
-    let db = file_duplicates::HashDb::try_new(db).unwrap();
+    let db = duped::HashDb::try_new(db).unwrap();
     for ((size, hash), mut paths) in stats.duplicates {
         if paths.len() > 1 {
             println!("Hash: {}", hash);
@@ -216,8 +216,8 @@ fn interactive_removal(
     Ok(())
 }
 
-fn same_filename_removal(db: &Path, stats: file_duplicates::Stats) {
-    let db = file_duplicates::HashDb::try_new(db).unwrap();
+fn same_filename_removal(db: &Path, stats: duped::Stats) {
+    let db = HashDb::try_new(db).unwrap();
     for (_, mut paths) in stats.duplicates {
         if paths.len() > 1 {
             paths.sort();
@@ -256,8 +256,8 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn paranoid_removal(db: &Path, stats: file_duplicates::Stats) {
-    let db = file_duplicates::HashDb::try_new(db).unwrap();
+fn paranoid_removal(db: &Path, stats: duped::Stats) {
+    let db = HashDb::try_new(db).unwrap();
     for (_, mut paths) in stats.duplicates {
         if paths.len() > 1 {
             paths.sort();
@@ -290,7 +290,7 @@ fn main() -> anyhow::Result<()> {
         None => return Ok(()),
     };
     println!("Directories: {:?}", args.params.roots());
-    let stats = file_duplicates::find(&args.params)?;
+    let stats = duped::find(&args.params)?;
     match args.remove {
         Some(RemovalKind::Interactive) => {
             interactive_removal(args.params.db_path(), stats, std::io::stdin().lock())?
@@ -333,14 +333,10 @@ mod tests {
         tmpdir
     }
 
-    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, file_duplicates::Stats)) -> Context {
+    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, duped::Stats)) -> Context {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
-        let stats = file_duplicates::find(&Params::new(
-            0,
-            vec![dir.path().to_owned()],
-            db.path().to_owned(),
-        ))
-        .unwrap();
+        let stats = duped::find(&Params::new(0, vec![dir.path().to_owned()], db.path().to_owned()))
+            .unwrap();
         f(db.path(), stats);
         Context { dir, db }
     }

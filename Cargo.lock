@@ -158,6 +158,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
+name = "duped"
+version = "0.4.1"
+dependencies = [
+ "blake3",
+ "byte-unit",
+ "filetime",
+ "num_cpus",
+ "rlimit",
+ "rusqlite",
+ "walkdir",
+]
+
+[[package]]
+name = "duped-cli"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "byte-unit",
+ "duped",
+ "home",
+ "pico-args",
+ "tempfile",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,31 +215,6 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-
-[[package]]
-name = "file-duplicates"
-version = "0.4.1"
-dependencies = [
- "blake3",
- "byte-unit",
- "filetime",
- "num_cpus",
- "rlimit",
- "rusqlite",
- "walkdir",
-]
-
-[[package]]
-name = "file-duplicates-cli"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "byte-unit",
- "file-duplicates",
- "home",
- "pico-args",
- "tempfile",
-]
 
 [[package]]
 name = "filetime"
