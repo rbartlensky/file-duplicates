@@ -2,6 +2,8 @@
 name = "duped-cli"
 version = "0.1.0"
 edition = "2021"
+description = "A CLI that helps you find file duplicates."
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "duped"
