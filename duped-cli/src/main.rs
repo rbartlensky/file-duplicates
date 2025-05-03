@@ -1,4 +1,4 @@
-use duped::{HashDb, Params};
+use duped::{Deduper, HashDb};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -50,7 +50,7 @@ impl RemovalKind {
 #[derive(Debug)]
 struct Args {
     remove: Option<RemovalKind>,
-    params: Params,
+    deduper: Deduper,
 }
 
 fn parse_args() -> Result<Option<Args>, pico_args::Error> {
@@ -119,9 +119,8 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
             cause: "'<PATH>' argument is missing".into(),
         })
     } else {
-        // TODO: do something with the receiver.
-        let (params, _) = Params::new(lower_limit, roots, db);
-        Ok(Some(Args { params, remove }))
+        let deduper = Deduper::builder(roots).lower_limit(lower_limit).db_path(db).build();
+        Ok(Some(Args { deduper, remove }))
     }
 }
 
@@ -151,20 +150,22 @@ fn print_stats(stats: duped::Stats) {
     println!("Duplicate files take up {} of space on disk.", format_bytes(dup_bytes));
 }
 
-fn remove_file(path: &std::path::Path, db: &HashDb) {
+fn remove_file(path: &std::path::Path, db: Option<&HashDb>) {
     if let Err(e) = std::fs::remove_file(path) {
         eprintln!("failed to remove '{}': {}", path.display(), e);
     } else {
-        db.remove(path).unwrap();
+        if let Some(db) = db {
+            db.remove(path).unwrap();
+        }
     }
 }
 
 fn interactive_removal(
-    db: &Path,
+    db: Option<&Path>,
     stats: duped::Stats,
     mut stdin: impl std::io::BufRead,
 ) -> io::Result<()> {
-    let db = duped::HashDb::try_new(db).unwrap();
+    let db = db.map(|db| duped::HashDb::try_new(db).unwrap());
     for ((size, hash), mut paths) in stats.duplicates {
         if paths.len() > 1 {
             println!("Hash: {}", hash);
@@ -200,12 +201,12 @@ fn interactive_removal(
                             j += 2;
                         }
                         "1" => {
-                            remove_file(path1, &db);
+                            remove_file(path1, db.as_ref());
                             i = j;
                             j += 1;
                         }
                         "2" => {
-                            remove_file(path2, &db);
+                            remove_file(path2, db.as_ref());
                             j += 1;
                         }
                         _ => read = true,
@@ -217,8 +218,8 @@ fn interactive_removal(
     Ok(())
 }
 
-fn same_filename_removal(db: &Path, stats: duped::Stats) {
-    let db = HashDb::try_new(db).unwrap();
+fn same_filename_removal(db: Option<&Path>, stats: duped::Stats) {
+    let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, mut paths) in stats.duplicates {
         if paths.len() > 1 {
             paths.sort();
@@ -229,7 +230,7 @@ fn same_filename_removal(db: &Path, stats: duped::Stats) {
                         dup_path.display(),
                         paths[0].display()
                     );
-                    remove_file(dup_path, &db);
+                    remove_file(dup_path, db.as_ref());
                 }
             }
         }
@@ -257,8 +258,8 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn paranoid_removal(db: &Path, stats: duped::Stats) {
-    let db = HashDb::try_new(db).unwrap();
+fn paranoid_removal(db: Option<&Path>, stats: duped::Stats) {
+    let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, mut paths) in stats.duplicates {
         if paths.len() > 1 {
             paths.sort();
@@ -270,7 +271,7 @@ fn paranoid_removal(db: &Path, stats: duped::Stats) {
                             dup_path.display(),
                             paths[0].display()
                         );
-                        remove_file(dup_path, &db);
+                        remove_file(dup_path, db.as_ref());
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!(
@@ -290,14 +291,14 @@ fn main() -> anyhow::Result<()> {
         Some(args) => args,
         None => return Ok(()),
     };
-    println!("Directories: {:?}", args.params.roots());
-    let stats = duped::find(&args.params)?;
+    println!("Directories: {:?}", args.deduper.roots());
+    let stats = args.deduper.find()?;
     match args.remove {
         Some(RemovalKind::Interactive) => {
-            interactive_removal(args.params.db_path(), stats, std::io::stdin().lock())?
+            interactive_removal(args.deduper.db_path(), stats, std::io::stdin().lock())?
         }
-        Some(RemovalKind::SameFilename) => same_filename_removal(args.params.db_path(), stats),
-        Some(RemovalKind::Paranoid) => paranoid_removal(args.params.db_path(), stats),
+        Some(RemovalKind::SameFilename) => same_filename_removal(args.deduper.db_path(), stats),
+        Some(RemovalKind::Paranoid) => paranoid_removal(args.deduper.db_path(), stats),
         None => print_stats(stats),
     }
     Ok(())
@@ -336,9 +337,10 @@ mod tests {
 
     fn do_remove(dir: TempDir, f: impl FnOnce(&Path, duped::Stats)) -> Context {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
-        let stats = duped::find(&Params::new(0, vec![dir.path().to_owned()], db.path().to_owned()))
-            .unwrap();
-        f(db.path(), stats);
+        let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
+            .db_path(db.path().to_owned())
+            .build();
+        f(db.path(), stats.find().unwrap());
         Context { dir, db }
     }
 
@@ -347,7 +349,7 @@ mod tests {
         build_tree(dir.path(), &[("a", b"a"), ("a2", b"a")]);
         do_remove(dir, |db, stats| {
             let input = Cursor::new(choice);
-            interactive_removal(db, stats, input).unwrap();
+            interactive_removal(Some(db), stats, input).unwrap();
         })
     }
 
@@ -388,7 +390,7 @@ mod tests {
             ("a", &[("a1", b"a1"), ("b", b"b")]),
             ("b", &[("a2", b"a1"), ("b", b"b")]),
         ]);
-        let ctx = do_remove(dir, |db, stats| same_filename_removal(db, stats));
+        let ctx = do_remove(dir, |db, stats| same_filename_removal(Some(db), stats));
         let files = [("a/a1", true), ("a/b", true), ("b/a2", true), ("b/b", false)];
         do_check(ctx, &files);
     }
@@ -399,7 +401,7 @@ mod tests {
             ("a", &[("a1", b"a1"), ("b", b"b")]),
             ("b", &[("a2", b"a1"), ("b", b"b")]),
         ]);
-        let ctx = do_remove(dir, |db, stats| paranoid_removal(db, stats));
+        let ctx = do_remove(dir, |db, stats| paranoid_removal(Some(db), stats));
         let files = [("a/a1", true), ("a/b", true), ("b/a2", false), ("b/b", false)];
         do_check(ctx, &files);
     }

@@ -1,14 +1,12 @@
-//! This library can be used to find duplicated files starting from a particular
-//! root directory. To use it, please look over the following docs: [find],
-//! [Params], and [Stats].
+//! This library can be used to find duplicated files across a list of preconfigured directories ("roots").
 //!
 //! # Examples
 //!
 //! ```no_run
-//! use file_duplicates::{find, Params};
+//! use duped::Deduper;
 //!
-//! let params = Params::new(0, vec!["./".into()], "test.db".into());
-//! let stats = find(&params).unwrap();
+//! let deduper = Deduper::builder(vec!["./".into()]).build();
+//! let stats = deduper.find().unwrap();
 //! ```
 
 use blake3::Hash;
@@ -21,11 +19,7 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Receiver, SyncSender},
-        Arc,
-    },
+    sync::mpsc::{self, Receiver, SyncSender},
 };
 use walkdir::WalkDir;
 
@@ -34,65 +28,172 @@ pub use db::{Entry, HashDb};
 
 use crate::db::retry_on_busy;
 
-/// Used to configure the [find] function.
+/// File deduplicator.
 #[derive(Debug)]
-pub struct Params {
-    /// If the size of the file is under `lower_limit` bytes, it is not taken
-    /// into account.
-    lower_limit: u64,
-    /// Where to start the search from.
-    roots: Vec<PathBuf>,
-    /// Where to store the hash database.
-    db: PathBuf,
-    /// The total number of files processed at a particular moment in time.
-    total_files_processed: Arc<AtomicUsize>,
-    /// Sending side of a channel used to notify the caller that the total number
-    /// of files has been incremented.
-    file_processed_tx: SyncSender<()>,
+pub struct Deduper {
+    inner: DeduperInner,
 }
 
-impl Params {
-    /// Create a new instance of [`Params`].
-    ///
-    /// # Arguments
-    ///
-    /// * `lower_limit` - If the size of the file is under `lower_limit` bytes, it is not taken
-    ///                   into account.
-    /// * `root` - Where to start the search from.
-    /// * `db` - Where to store the hash database.
-    ///
-    /// # Returns
-    ///
-    /// The first member of the tuple is the instance, and the second is a receiver that can be used to wait until a
-    /// new file has been processed during a [`find`] operation.
-    pub fn new(lower_limit: u64, roots: Vec<PathBuf>, db: PathBuf) -> (Self, Receiver<()>) {
-        let (tx, rx) = mpsc::sync_channel(1);
-        let this = Self {
-            lower_limit,
-            roots,
-            db,
-            total_files_processed: Default::default(),
-            file_processed_tx: tx,
-        };
-
-        (this, rx)
+impl Deduper {
+    /// Create a [`DeduperBuilder`].
+    pub fn builder(roots: Vec<PathBuf>) -> DeduperBuilder {
+        DeduperBuilder::new(roots)
     }
 
-    /// Get the roots that this instance was initialized with.
-    ///
-    /// A root is a path where searching starts from.
+    /// Return the configured roots.
     pub fn roots(&self) -> &[PathBuf] {
-        &self.roots
+        &self.inner.roots
     }
 
-    /// Get the path to the database.
-    pub fn db_path(&self) -> &Path {
-        &self.db
+    /// Return the configured database path.
+    pub fn db_path(&self) -> Option<&Path> {
+        self.inner.db_path.as_deref()
     }
 
-    /// Get the total number of files that have been processed until now.
-    pub fn total_files_processed(&self) -> usize {
-        self.total_files_processed.load(Ordering::Acquire)
+    /// Finds and returns duplicated files on disk.
+    pub fn find(&self) -> io::Result<Stats> {
+        // TODO: what's a good minimum number?
+        let num_threads = num_cpus::get().min(16);
+        // give some leeway so that we don't hit the limit by accident
+        let fds = rlimit::getrlimit(rlimit::Resource::NOFILE)?.0 as usize - 4 * num_threads;
+
+        let (tx, rx) = mpsc::sync_channel(fds);
+        let mut threads = VecDeque::with_capacity(num_threads);
+        for _ in 0..num_threads {
+            let (thread_tx, thread_rx) = mpsc::sync_channel(fds / num_threads);
+            let db_path = self.inner.db_path.clone();
+            let tx = tx.clone();
+            let handle = std::thread::spawn(move || {
+                if let Some(db) = db_path {
+                    hasher_task_with_caching(db, thread_rx, tx)
+                } else {
+                    hasher_task(thread_rx, tx)
+                }
+            });
+            threads.push_back((handle, thread_tx));
+        }
+        let collector = std::thread::spawn(|| collect(rx));
+        drop(tx);
+
+        let mut total_files_processed = 0;
+        let mut total_bytes_processed = 0;
+        let mut next_worker = 0;
+        for root in &self.inner.roots {
+            for entry in WalkDir::new(root) {
+                let mut path = match entry {
+                    Ok(p) => p.into_path(),
+                    Err(e) => {
+                        eprintln!("io error occured: {}", e);
+                        continue;
+                    }
+                };
+                if path.is_dir() || path.is_symlink() {
+                    continue;
+                }
+                let md = match path.metadata() {
+                    Ok(md) => md,
+                    Err(e) => {
+                        eprintln!("io error when reading metadata {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
+
+                let size = md.len();
+                // TODO: other filters?
+                if let Some(lower_limit) = self.inner.lower_limit {
+                    if size < lower_limit {
+                        continue;
+                    }
+                }
+                let mtime = FileTime::from_last_modification_time(&md);
+
+                let mut file = match File::open(&path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("failed to open {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
+
+                total_files_processed += 1;
+                total_bytes_processed += size;
+                'outer: loop {
+                    for _ in 0..threads.len() {
+                        // we want to have each thread doing something, hence why we go
+                        // round-robin
+                        let tx = &threads[next_worker].1;
+                        next_worker = (next_worker + 1) % num_threads;
+                        match tx.try_send((path, file, mtime)) {
+                            Ok(()) => break 'outer,
+                            // if a thread crashed, we continue on, since we'll
+                            // see the error after we process all files
+                            Err(mpsc::TrySendError::Full((p, f, _)))
+                            | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
+                                path = p;
+                                file = f;
+                            }
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        }
+        // XXX: why doesn't rust "drop in place" rx if I use `_`?
+        for (t, rx) in threads {
+            drop(rx);
+            t.join().expect("failed to join with thread").expect("db operation failed");
+        }
+        Ok(Stats {
+            duplicates: collector.join().expect("failed to join with collector"),
+            total_files_processed,
+            total_bytes_processed,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DeduperInner {
+    /// Where to start the search from.
+    roots: Vec<PathBuf>,
+    /// If the size of the file is under `lower_limit` bytes, it is not taken
+    /// into account.
+    lower_limit: Option<u64>,
+    /// Where to store the hash database.
+    db_path: Option<PathBuf>,
+}
+
+/// A builder for [`Deduper`].
+pub struct DeduperBuilder {
+    inner: DeduperInner,
+}
+
+impl DeduperBuilder {
+    /// Create a new instance of the builder with a list of roots.
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self { inner: DeduperInner { roots, lower_limit: None, db_path: None } }
+    }
+
+    /// Set the lower file size limit, in bytes.
+    ///
+    /// Files that are smaller than `limit` will be skipped (not checked for duplication).
+    pub fn lower_limit(mut self, limit: u64) -> Self {
+        self.inner.lower_limit = Some(limit);
+
+        self
+    }
+
+    /// Set the sqlite database path.
+    ///
+    /// If the path doesn't exist, the deduper will initialize an new sqlite database at that path.
+    pub fn db_path(mut self, db_path: PathBuf) -> Self {
+        self.inner.db_path = Some(db_path);
+
+        self
+    }
+
+    /// Build a [`Deduper`].
+    pub fn build(self) -> Deduper {
+        Deduper { inner: self.inner }
     }
 }
 
@@ -108,98 +209,6 @@ pub struct Stats {
     pub total_files_processed: usize,
     /// The number of bytes that have been processed.
     pub total_bytes_processed: u64,
-}
-
-/// Finds and returns duplicated files on disk.
-pub fn find(params: &Params) -> io::Result<Stats> {
-    // TODO: what's a good minimum number?
-    let num_threads = num_cpus::get().min(16);
-    // give some leeway so that we don't hit the limit by accident
-    let fds = rlimit::getrlimit(rlimit::Resource::NOFILE)?.0 as usize - 4 * num_threads;
-
-    let (tx, rx) = mpsc::sync_channel(fds);
-    let mut threads = VecDeque::with_capacity(num_threads);
-    for _ in 0..num_threads {
-        let (thread_tx, thread_rx) = mpsc::sync_channel(fds / num_threads);
-        let db = params.db.clone();
-        let tx = tx.clone();
-        let handle = std::thread::spawn(move || hasher_task(db, thread_rx, tx));
-        threads.push_back((handle, thread_tx));
-    }
-    let collector = std::thread::spawn(|| collect(rx));
-    drop(tx);
-
-    let mut total_files_processed = 0;
-    let mut total_bytes_processed = 0;
-    let mut next_worker = 0;
-    for root in &params.roots {
-        for entry in WalkDir::new(root) {
-            let mut path = match entry {
-                Ok(p) => p.into_path(),
-                Err(e) => {
-                    eprintln!("io error occured: {}", e);
-                    continue;
-                }
-            };
-            if path.is_dir() || path.is_symlink() {
-                continue;
-            }
-            let md = match path.metadata() {
-                Ok(md) => md,
-                Err(e) => {
-                    eprintln!("io error when reading metadata {}: {}", path.display(), e);
-                    continue;
-                }
-            };
-
-            let size = md.len();
-            // TODO: other filters?
-            if size < params.lower_limit {
-                continue;
-            }
-            let mtime = FileTime::from_last_modification_time(&md);
-
-            let mut file = match File::open(&path) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("failed to open {}: {}", path.display(), e);
-                    continue;
-                }
-            };
-
-            total_files_processed += 1;
-            total_bytes_processed += size;
-            'outer: loop {
-                for _ in 0..threads.len() {
-                    // we want to have each thread doing something, hence why we go
-                    // round-robin
-                    let tx = &threads[next_worker].1;
-                    next_worker = (next_worker + 1) % num_threads;
-                    match tx.try_send((path, file, mtime)) {
-                        Ok(()) => break 'outer,
-                        // if a thread crashed, we continue on, since we'll
-                        // see the error after we process all files
-                        Err(mpsc::TrySendError::Full((p, f, _)))
-                        | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
-                            path = p;
-                            file = f;
-                        }
-                    }
-                }
-                std::thread::yield_now();
-            }
-        }
-    }
-    // XXX: why doesn't rust "drop in place" rx if I use `_`?
-    for (t, rx) in threads {
-        drop(rx);
-        t.join().expect("failed to join with thread").expect("db operation failed");
-    }
-    Ok(Stats {
-        duplicates: collector.join().expect("failed to join with collector"),
-        total_files_processed,
-        total_bytes_processed,
-    })
 }
 
 fn hash_file(file: File) -> io::Result<(u64, Hash)> {
@@ -221,6 +230,22 @@ fn hash_file(file: File) -> io::Result<(u64, Hash)> {
 }
 
 fn hasher_task(
+    tasks: Receiver<(PathBuf, File, FileTime)>,
+    tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
+) -> rusqlite::Result<()> {
+    while let Ok((path, file, _)) = tasks.recv() {
+        let res = hash_file(file);
+
+        if tx.send((path, res)).is_err() {
+            eprintln!("failed to send hash, quiting...");
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn hasher_task_with_caching(
     db: PathBuf,
     tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,

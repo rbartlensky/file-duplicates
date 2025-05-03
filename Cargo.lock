@@ -167,6 +167,7 @@ dependencies = [
  "num_cpus",
  "rlimit",
  "rusqlite",
+ "tempfile",
  "walkdir",
 ]
 
