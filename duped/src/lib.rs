@@ -22,10 +22,12 @@ use walkdir::WalkDir;
 
 mod db;
 mod duplicates;
+mod traits;
 
 use db::retry_on_busy;
 pub use db::{Entry, HashDb};
 pub use duplicates::{Duplicates, FileEntry};
+pub use traits::*;
 
 /// File deduplicator.
 #[derive(Debug)]
