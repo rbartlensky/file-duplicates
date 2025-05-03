@@ -12,10 +12,7 @@
 use blake3::Hash;
 use filetime::FileTime;
 use std::{
-    collections::{
-        hash_map::Entry::{Occupied, Vacant},
-        HashMap, VecDeque,
-    },
+    collections::VecDeque,
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
@@ -24,9 +21,11 @@ use std::{
 use walkdir::WalkDir;
 
 mod db;
-pub use db::{Entry, HashDb};
+mod duplicates;
 
-use crate::db::retry_on_busy;
+use db::retry_on_busy;
+pub use db::{Entry, HashDb};
+pub use duplicates::{Duplicates, FileEntry};
 
 /// File deduplicator.
 #[derive(Debug)]
@@ -51,7 +50,7 @@ impl Deduper {
     }
 
     /// Finds and returns duplicated files on disk.
-    pub fn find(&self) -> io::Result<Stats> {
+    pub fn find(&self) -> io::Result<Duplicates> {
         // TODO: what's a good minimum number?
         let num_threads = num_cpus::get().min(16);
         // give some leeway so that we don't hit the limit by accident
@@ -75,8 +74,6 @@ impl Deduper {
         let collector = std::thread::spawn(|| collect(rx));
         drop(tx);
 
-        let mut total_files_processed = 0;
-        let mut total_bytes_processed = 0;
         let mut next_worker = 0;
         for root in &self.inner.roots {
             for entry in WalkDir::new(root) {
@@ -115,8 +112,6 @@ impl Deduper {
                     }
                 };
 
-                total_files_processed += 1;
-                total_bytes_processed += size;
                 'outer: loop {
                     for _ in 0..threads.len() {
                         // we want to have each thread doing something, hence why we go
@@ -143,11 +138,10 @@ impl Deduper {
             drop(rx);
             t.join().expect("failed to join with thread").expect("db operation failed");
         }
-        Ok(Stats {
-            duplicates: collector.join().expect("failed to join with collector"),
-            total_files_processed,
-            total_bytes_processed,
-        })
+
+        let duplicates = collector.join().expect("failed to join with collector");
+
+        Ok(duplicates)
     }
 }
 
@@ -195,20 +189,6 @@ impl DeduperBuilder {
     pub fn build(self) -> Deduper {
         Deduper { inner: self.inner }
     }
-}
-
-pub type Duplicates = HashMap<(u64, Hash), Vec<PathBuf>>;
-
-/// Useful stats about a successful [find] operation.
-pub struct Stats {
-    /// A map from hashes to paths. If a hash points to multiple paths, then it
-    /// means the files had the same hash, and are most likely duplicates of each
-    /// other.
-    pub duplicates: Duplicates,
-    /// The number of files that have been hashed.
-    pub total_files_processed: usize,
-    /// The number of bytes that have been processed.
-    pub total_bytes_processed: u64,
 }
 
 fn hash_file(file: File) -> io::Result<(u64, Hash)> {
@@ -277,7 +257,7 @@ fn hasher_task_with_caching(
 }
 
 fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
-    let mut entries: Duplicates = HashMap::new();
+    let mut duplicates = Duplicates::default();
     while let Ok((path, res)) = rx.recv() {
         let (size, hash) = match res {
             Ok(h) => h,
@@ -286,12 +266,8 @@ fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
                 continue;
             }
         };
-        match entries.entry((size, hash)) {
-            Occupied(mut v) => v.get_mut().push(path),
-            Vacant(v) => {
-                v.insert(vec![path]);
-            }
-        }
+        duplicates.add_entry(hash, FileEntry::new(path, size));
     }
-    entries
+
+    duplicates
 }

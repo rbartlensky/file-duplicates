@@ -1,4 +1,4 @@
-use duped::{Deduper, HashDb};
+use duped::{Deduper, Duplicates, HashDb};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -130,23 +130,22 @@ fn format_bytes(bytes: u64) -> String {
     format!("{unit:.2}")
 }
 
-fn print_stats(stats: duped::Stats) {
+fn print_stats(duplicates: Duplicates) {
     let mut dup_bytes = 0;
     println!("The following duplicate files have been found:");
-    for ((size, hash), paths) in stats.duplicates {
+    for (hash, paths) in duplicates.hashes() {
         if paths.len() > 1 {
-            dup_bytes += paths.len() as u64 * size;
             println!("Hash: {}", hash);
-            for path in &paths {
-                println!("-> size: {}, file: '{}'", format_bytes(size), path.display());
+            for entry in paths {
+                dup_bytes += entry.size();
+                println!(
+                    "-> size: {}, file: '{}'",
+                    format_bytes(entry.size()),
+                    entry.path().display()
+                );
             }
         }
     }
-    println!(
-        "Processed {} files (total of {})",
-        stats.total_files_processed,
-        format_bytes(stats.total_bytes_processed)
-    );
     println!("Duplicate files take up {} of space on disk.", format_bytes(dup_bytes));
 }
 
@@ -162,28 +161,29 @@ fn remove_file(path: &std::path::Path, db: Option<&HashDb>) {
 
 fn interactive_removal(
     db: Option<&Path>,
-    stats: duped::Stats,
+    duplicates: Duplicates,
     mut stdin: impl std::io::BufRead,
 ) -> io::Result<()> {
     let db = db.map(|db| duped::HashDb::try_new(db).unwrap());
-    for ((size, hash), mut paths) in stats.duplicates {
-        if paths.len() > 1 {
+    for (hash, entries) in duplicates.hashes() {
+        if entries.len() > 1 {
             println!("Hash: {}", hash);
-            paths.sort();
+            let mut entries = entries.clone();
+            entries.sort_by(|l, r| l.path().cmp(r.path()));
             let mut i = 0;
             let mut j = 1;
-            while i < j && j < paths.len() {
-                let path1 = &paths[i];
-                let path2 = &paths[j];
+            while i < j && j < entries.len() {
+                let path1 = &entries[i];
+                let path2 = &entries[j];
                 let mut choice = String::with_capacity(3);
                 let mut read = true;
                 while read {
                     print!(
                         "(1) {} (size {})\n(2) {} (size {})\nRemove (s to skip): ",
-                        path1.display(),
-                        format_bytes(size),
-                        path2.display(),
-                        format_bytes(size),
+                        path1.path().display(),
+                        format_bytes(path1.size()),
+                        path2.path().display(),
+                        format_bytes(path2.size()),
                     );
                     if let Err(e) = std::io::stdout().flush() {
                         eprintln!("failed to flush to stdout: {}", e);
@@ -201,12 +201,12 @@ fn interactive_removal(
                             j += 2;
                         }
                         "1" => {
-                            remove_file(path1, db.as_ref());
+                            remove_file(path1.path(), db.as_ref());
                             i = j;
                             j += 1;
                         }
                         "2" => {
-                            remove_file(path2, db.as_ref());
+                            remove_file(path2.path(), db.as_ref());
                             j += 1;
                         }
                         _ => read = true,
@@ -218,19 +218,20 @@ fn interactive_removal(
     Ok(())
 }
 
-fn same_filename_removal(db: Option<&Path>, stats: duped::Stats) {
+fn same_filename_removal(db: Option<&Path>, duplicates: Duplicates) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
-    for (_, mut paths) in stats.duplicates {
-        if paths.len() > 1 {
-            paths.sort();
-            for dup_path in &paths[1..] {
-                if dup_path.file_name() == paths[0].file_name() {
+    for (_, entries) in duplicates.hashes() {
+        if entries.len() > 1 {
+            let mut entries = entries.clone();
+            entries.sort_by(|l, r| l.path().cmp(r.path()));
+            for dup_path in &entries[1..] {
+                if dup_path.path().file_name() == entries[0].path().file_name() {
                     println!(
                         "Removing '{}' (duplicate of '{}')",
-                        dup_path.display(),
-                        paths[0].display()
+                        dup_path.path().display(),
+                        entries[0].path().display()
                     );
-                    remove_file(dup_path, db.as_ref());
+                    remove_file(dup_path.path(), db.as_ref());
                 }
             }
         }
@@ -258,26 +259,27 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn paranoid_removal(db: Option<&Path>, stats: duped::Stats) {
+fn paranoid_removal(db: Option<&Path>, duplicates: Duplicates) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
-    for (_, mut paths) in stats.duplicates {
-        if paths.len() > 1 {
-            paths.sort();
-            for dup_path in &paths[1..] {
-                match same_content(&paths[0], dup_path) {
+    for (_, entries) in duplicates.hashes() {
+        if entries.len() > 1 {
+            let mut entries = entries.clone();
+            entries.sort_by(|l, r| l.path().cmp(r.path()));
+            for dup_path in &entries[1..] {
+                match same_content(entries[0].path(), dup_path.path()) {
                     Ok(true) => {
                         println!(
                             "Removing '{}' (duplicate of '{}')",
-                            dup_path.display(),
-                            paths[0].display()
+                            dup_path.path().display(),
+                            entries[0].path().display()
                         );
-                        remove_file(dup_path, db.as_ref());
+                        remove_file(dup_path.path(), db.as_ref());
                     }
                     Ok(false) => {}
                     Err(e) => eprintln!(
                         "failed to compare '{}' to '{}': {:?}",
-                        dup_path.display(),
-                        paths[0].display(),
+                        dup_path.path().display(),
+                        entries[0].path().display(),
                         e
                     ),
                 }
@@ -335,7 +337,7 @@ mod tests {
         tmpdir
     }
 
-    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, duped::Stats)) -> Context {
+    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, Duplicates)) -> Context {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
             .db_path(db.path().to_owned())
