@@ -6,7 +6,7 @@ use std::{
 use blake3::Hash;
 
 /// Metadata about a file that has been processed by [`crate::Deduper`].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileEntry {
     path: PathBuf,
     size: u64,
@@ -30,7 +30,7 @@ impl FileEntry {
 }
 
 /// A collection of duplicates.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Duplicates {
     /// A list of file entries, grouped by their content's hash.
     hashes: HashMap<Hash, Vec<FileEntry>>,
