@@ -3,10 +3,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use duped::Deduper;
+//! use duped::{ContentLimit, Deduper, NoopStopper, NoopFindHook};
 //!
 //! let deduper = Deduper::builder(vec!["./".into()]).build();
-//! let stats = deduper.find().unwrap();
+//! let stats = deduper.find(NoopStopper, ContentLimit::no_limit(), NoopFindHook).unwrap();
 //! ```
 
 use blake3::Hash;
@@ -55,8 +55,13 @@ impl Deduper {
     }
 
     /// Finds and returns duplicated files on disk.
-    pub fn find(&self, hooks: impl DeduperFindHook) -> io::Result<Duplicates> {
-        let hooks = Arc::new(hooks) as Arc<dyn DeduperFindHook>;
+    pub fn find(
+        &self,
+        mut stopper: impl DeduperStop,
+        mut file_filter: impl DeduperFileFilter,
+        find_hook: impl DeduperFindHook,
+    ) -> io::Result<Duplicates> {
+        let hooks = Arc::new(find_hook) as Arc<dyn DeduperFindHook>;
         // TODO: what's a good minimum number?
         let num_threads = num_cpus::get().min(16);
         // give some leeway so that we don't hit the limit by accident
@@ -84,7 +89,7 @@ impl Deduper {
         let mut next_worker = 0;
         'main: for root in &self.inner.roots {
             for entry in WalkDir::new(root) {
-                if hooks.should_stop() {
+                if stopper.should_stop() {
                     break 'main;
                 }
 
@@ -106,7 +111,7 @@ impl Deduper {
                     }
                 };
 
-                if !hooks.include_file(&path, &md) {
+                if !file_filter.include_file(&path, &md) {
                     continue;
                 }
 

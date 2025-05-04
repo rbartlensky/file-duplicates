@@ -29,24 +29,70 @@ impl FileEntry {
     }
 }
 
+/// Files that share the same hash.
+#[derive(Debug)]
+pub struct FileEntries {
+    files: Vec<FileEntry>,
+    file_size: u64,
+}
+
+impl FileEntries {
+    /// Create a new instance.
+    pub(crate) fn new(files: Vec<FileEntry>) -> Self {
+        let file_size = files.get(0).map(|e| e.size()).unwrap_or(0);
+
+        Self { files, file_size }
+    }
+
+    pub(crate) fn push(&mut self, entry: FileEntry) {
+        if self.files.is_empty() {
+            self.file_size = entry.size();
+            self.files.push(entry);
+        } else {
+            assert_eq!(self.file_size, entry.size());
+            self.files.push(entry);
+        }
+    }
+
+    pub(crate) fn has_duplicates(&self) -> bool {
+        self.files.len() > 1
+    }
+
+    /// The file size shared by all entries.
+    ///
+    /// Since `FileEntries` stores all files that were hashed to the same value, each [`FileEntry`] is going to have the same size. This value is returned from this function.
+    pub fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Return all [`FileEntry`]s stored by this instance.
+    pub fn file_entries(&self) -> &[FileEntry] {
+        &self.files
+    }
+}
+
 /// A collection of duplicates.
 #[derive(Debug, Default)]
 pub struct Duplicates {
     /// A list of file entries, grouped by their content's hash.
-    hashes: HashMap<Hash, Vec<FileEntry>>,
+    hashes: HashMap<Hash, FileEntries>,
 }
 
 impl Duplicates {
     /// Add a new entry into the duplicates map.
     pub(crate) fn add_entry(&mut self, hash: Hash, file: FileEntry) {
-        self.hashes.entry(hash).or_default().push(file)
+        self.hashes.entry(hash).or_insert_with(|| FileEntries::new(vec![])).push(file)
     }
 
     /// Get the collection of hashes and files that were gathered during [`crate::Deduper::find`].
     ///
     /// Each entry consists of a hash, and all the files that share the same hash. If an entry has only one path, that
     /// means it has no duplicates.
-    pub fn hashes(&self) -> &HashMap<Hash, Vec<FileEntry>> {
+    pub fn hashes(&self) -> &HashMap<Hash, FileEntries> {
         &self.hashes
+    }
+
+    pub fn duplicates(&self) -> impl Iterator<Item = (&Hash, &FileEntries)> {
+        self.hashes.iter().filter(|(_, entries)| entries.has_duplicates())
     }
 }

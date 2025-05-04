@@ -1,26 +1,7 @@
 //! A collection of traits that can be used to configure the [`crate::Deduper`]'s behaviour, and also to subscribe to
 //! particular events (such as a file being processed).
 //!
-//! # Example
-//!
-//! ```rust
-//! use duped::{ContentLimit, Deduper, Duplicates, HashDb};
-//!
-//! /// A simple wrapper around [`ContentLimit`] that implements [`DeduperFindHook`]
-//! struct FinderImpl {
-//!     content: ContentLimit,
-//! }
-//!
-//! impl DeduperStop for FinderImpl {}
-//!
-//! impl DeduperFileFilter for FinderImpl {
-//!     fn include_file(&self, path: &Path, metadata: &std::fs::Metadata) -> bool {
-//!         self.content.include_file(path, metadata)
-//!     }
-//! }
-//!
-//! impl DeduperFindHook for FinderImpl {}
-//! ```
+//! See also: [`NoopStopper`], [`CotentLimit`], and [`NoopFindHook`].
 
 use crate::FileEntry;
 
@@ -33,7 +14,7 @@ pub trait DeduperStop {
     /// Return whether [`crate::Deduper`] should stop the current operation and return early.
     ///
     /// By default, this method always returns `false`.
-    fn should_stop(&self) -> bool {
+    fn should_stop(&mut self) -> bool {
         false
     }
 }
@@ -53,13 +34,13 @@ pub trait DeduperFileFilter {
     /// The [`crate::Deduper`] will skip processing a file if it fails to read its metadata.
     ///
     /// By default, all files are included.
-    fn include_file(&self, _path: &Path, _metadata: &fs::Metadata) -> bool {
+    fn include_file(&mut self, _path: &Path, _metadata: &fs::Metadata) -> bool {
         true
     }
 }
 
 /// [`crate::Deduper`] calls [`Self::entry_processed`] for every file it hashed successfully.
-pub trait DeduperFindHook: DeduperStop + DeduperFileFilter + Send + Sync + 'static {
+pub trait DeduperFindHook: Send + Sync + 'static {
     /// Hook that is called when the [`crate::Deduper`] finished hashing a file.
     ///
     /// Users are encouraged to use this method to get updates on the progress of [`crate::Deduper::find`].
@@ -116,7 +97,7 @@ impl ContentLimit {
 }
 
 impl DeduperFileFilter for ContentLimit {
-    fn include_file(&self, _: &Path, metadata: &fs::Metadata) -> bool {
+    fn include_file(&mut self, _: &Path, metadata: &fs::Metadata) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -133,3 +114,13 @@ impl DeduperFileFilter for ContentLimit {
         }
     }
 }
+
+/// A [`DeduperStop`] that never return `true` from `should_stop`.
+pub struct NoopStopper;
+
+impl DeduperStop for NoopStopper {}
+
+/// A [`DeduperFindHook`] that doesn't do anything.
+pub struct NoopFindHook;
+
+impl DeduperFindHook for NoopFindHook {}
