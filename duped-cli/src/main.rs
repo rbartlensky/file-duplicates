@@ -1,4 +1,4 @@
-use duped::{Deduper, Duplicates, HashDb};
+use duped::{ContentLimit, Deduper, Duplicates, HashDb};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -48,9 +48,25 @@ impl RemovalKind {
 }
 
 #[derive(Debug)]
+struct FinderImpl {
+    content: ContentLimit,
+}
+
+impl duped::DeduperStop for FinderImpl {}
+
+impl duped::DeduperFileFilter for FinderImpl {
+    fn include_file(&self, path: &Path, metadata: &std::fs::Metadata) -> bool {
+        self.content.include_file(path, metadata)
+    }
+}
+
+impl duped::DeduperFindHook for FinderImpl {}
+
+#[derive(Debug)]
 struct Args {
     remove: Option<RemovalKind>,
     deduper: Deduper,
+    finder_impl: FinderImpl,
 }
 
 fn parse_args() -> Result<Option<Args>, pico_args::Error> {
@@ -119,8 +135,10 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
             cause: "'<PATH>' argument is missing".into(),
         })
     } else {
-        let deduper = Deduper::builder(roots).lower_limit(lower_limit).db_path(db).build();
-        Ok(Some(Args { deduper, remove }))
+        let deduper = Deduper::builder(roots).db_path(db).build();
+        let finder_impl =
+            FinderImpl { content: ContentLimit::no_limit().with_lower_limit(lower_limit) };
+        Ok(Some(Args { deduper, remove, finder_impl }))
     }
 }
 
@@ -294,7 +312,7 @@ fn main() -> anyhow::Result<()> {
         None => return Ok(()),
     };
     println!("Directories: {:?}", args.deduper.roots());
-    let stats = args.deduper.find()?;
+    let stats = args.deduper.find(args.finder_impl)?;
     match args.remove {
         Some(RemovalKind::Interactive) => {
             interactive_removal(args.deduper.db_path(), stats, std::io::stdin().lock())?
@@ -342,7 +360,7 @@ mod tests {
         let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
             .db_path(db.path().to_owned())
             .build();
-        f(db.path(), stats.find().unwrap());
+        f(db.path(), stats.find(FinderImpl { content: ContentLimit::no_limit() }).unwrap());
         Context { dir, db }
     }
 

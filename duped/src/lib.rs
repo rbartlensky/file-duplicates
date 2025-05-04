@@ -16,7 +16,10 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, SyncSender},
+    sync::{
+        mpsc::{self, Receiver, SyncSender},
+        Arc,
+    },
 };
 use walkdir::WalkDir;
 
@@ -52,7 +55,8 @@ impl Deduper {
     }
 
     /// Finds and returns duplicated files on disk.
-    pub fn find(&self) -> io::Result<Duplicates> {
+    pub fn find(&self, hooks: impl DeduperFindHook) -> io::Result<Duplicates> {
+        let hooks = Arc::new(hooks) as Arc<dyn DeduperFindHook>;
         // TODO: what's a good minimum number?
         let num_threads = num_cpus::get().min(16);
         // give some leeway so that we don't hit the limit by accident
@@ -73,12 +77,17 @@ impl Deduper {
             });
             threads.push_back((handle, thread_tx));
         }
-        let collector = std::thread::spawn(|| collect(rx));
+        let hooks_ = Arc::clone(&hooks);
+        let collector = std::thread::spawn(|| collect(rx, hooks_));
         drop(tx);
 
         let mut next_worker = 0;
-        for root in &self.inner.roots {
+        'main: for root in &self.inner.roots {
             for entry in WalkDir::new(root) {
+                if hooks.should_stop() {
+                    break 'main;
+                }
+
                 let mut path = match entry {
                     Ok(p) => p.into_path(),
                     Err(e) => {
@@ -97,13 +106,10 @@ impl Deduper {
                     }
                 };
 
-                let size = md.len();
-                // TODO: other filters?
-                if let Some(lower_limit) = self.inner.lower_limit {
-                    if size < lower_limit {
-                        continue;
-                    }
+                if !hooks.include_file(&path, &md) {
+                    continue;
                 }
+
                 let mtime = FileTime::from_last_modification_time(&md);
 
                 let mut file = match File::open(&path) {
@@ -258,7 +264,10 @@ fn hasher_task_with_caching(
     Ok(())
 }
 
-fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
+fn collect(
+    rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>,
+    hooks: Arc<dyn DeduperFindHook>,
+) -> Duplicates {
     let mut duplicates = Duplicates::default();
     while let Ok((path, res)) = rx.recv() {
         let (size, hash) = match res {
@@ -268,7 +277,9 @@ fn collect(rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>) -> Duplicates {
                 continue;
             }
         };
-        duplicates.add_entry(hash, FileEntry::new(path, size));
+        let entry = FileEntry::new(path, size);
+        hooks.entry_processed(hash, &entry);
+        duplicates.add_entry(hash, entry);
     }
 
     duplicates
