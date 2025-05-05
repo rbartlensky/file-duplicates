@@ -62,10 +62,10 @@ impl Deduper {
         find_hook: impl DeduperFindHook,
     ) -> io::Result<Duplicates> {
         let hooks = Arc::new(find_hook) as Arc<dyn DeduperFindHook>;
+
         // TODO: what's a good minimum number?
         let num_threads = num_cpus::get().min(16);
-        // give some leeway so that we don't hit the limit by accident
-        let fds = rlimit::getrlimit(rlimit::Resource::NOFILE)?.0 as usize - 4 * num_threads;
+        let fds = number_of_fds_available(num_threads)?;
 
         let (tx, rx) = mpsc::sync_channel(fds);
         let mut threads = VecDeque::with_capacity(num_threads);
@@ -155,6 +155,22 @@ impl Deduper {
         let duplicates = collector.join().expect("failed to join with collector");
 
         Ok(duplicates)
+    }
+}
+
+fn number_of_fds_available(num_threads: usize) -> io::Result<usize> {
+    // give some leeway so that we don't hit the limit by accident
+    #[cfg(unix)]
+    {
+        let fds = rlimit::getrlimit(rlimit::Resource::NOFILE)?.0 as usize - 4 * num_threads;
+
+        return Ok(fds);
+    }
+    #[cfg(windows)]
+    {
+        let fds = rlimit::getmaxstdio() as usize - 4 * num_threads;
+
+        return Ok(fds);
     }
 }
 

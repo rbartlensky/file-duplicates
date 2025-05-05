@@ -1,5 +1,4 @@
 use rusqlite::{ffi, params, Connection, Error, Result};
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -41,7 +40,7 @@ ON CONFLICT (path)
 DO UPDATE SET mtime = excluded.mtime, hash = excluded.hash, size = excluded.size
 ",
             params![
-                entry.path.as_os_str().as_bytes(),
+                entry.path.as_os_str().as_encoded_bytes(),
                 entry.mtime,
                 entry.hash.as_bytes(),
                 entry.size
@@ -51,14 +50,16 @@ DO UPDATE SET mtime = excluded.mtime, hash = excluded.hash, size = excluded.size
 
     /// Removes the `path` entry.
     pub fn remove(&self, path: &Path) -> Result<usize> {
-        self.conn
-            .execute("DELETE FROM path WHERE path.path = ?1", params![path.as_os_str().as_bytes()])
+        self.conn.execute(
+            "DELETE FROM path WHERE path.path = ?1",
+            params![path.as_os_str().as_encoded_bytes()],
+        )
     }
 
     /// Gets the first (and only) entry for `path`.
     pub fn select<'p>(&self, path: &'p Path) -> Result<Option<Entry<'p>>> {
         let mut stmt = self.conn.prepare("SELECT mtime, hash, size FROM path WHERE path = ?1")?;
-        let mut iter = stmt.query_map([path.as_os_str().as_bytes()], |row| {
+        let mut iter = stmt.query_map([path.as_os_str().as_encoded_bytes()], |row| {
             let mut hash = [0; 32];
             let bytes = row.get_ref(1)?.as_blob()?;
             assert_eq!(bytes.len(), 32);
