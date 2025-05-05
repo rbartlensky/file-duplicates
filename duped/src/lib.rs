@@ -23,11 +23,12 @@ use std::{
 };
 use walkdir::WalkDir;
 
+#[cfg(feature = "sqlite")]
 mod db;
 mod duplicates;
 mod traits;
 
-use db::retry_on_busy;
+#[cfg(feature = "sqlite")]
 pub use db::{Entry, HashDb};
 pub use duplicates::{Duplicates, FileEntry};
 pub use traits::*;
@@ -71,14 +72,17 @@ impl Deduper {
         let mut threads = VecDeque::with_capacity(num_threads);
         for _ in 0..num_threads {
             let (thread_tx, thread_rx) = mpsc::sync_channel(fds / num_threads);
-            let db_path = self.inner.db_path.clone();
+            let _db_path = self.inner.db_path.clone();
             let tx = tx.clone();
             let handle = std::thread::spawn(move || {
-                if let Some(db) = db_path {
+                #[cfg(feature = "sqlite")]
+                if let Some(db) = _db_path {
                     hasher_task_with_caching(db, thread_rx, tx)
                 } else {
-                    hasher_task(thread_rx, tx)
+                    Ok(hasher_task(thread_rx, tx))
                 }
+                #[cfg(not(feature = "sqlite"))]
+                Result::<(), Error>::Ok(hasher_task(thread_rx, tx))
             });
             threads.push_back((handle, thread_tx));
         }
@@ -241,7 +245,7 @@ fn hash_file(file: File) -> io::Result<(u64, Hash)> {
 fn hasher_task(
     tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
-) -> rusqlite::Result<()> {
+) {
     while let Ok((path, file, _)) = tasks.recv() {
         let res = hash_file(file);
 
@@ -250,15 +254,30 @@ fn hasher_task(
             break;
         }
     }
-
-    Ok(())
 }
 
+#[derive(Debug)]
+enum Error {
+    #[cfg(feature = "sqlite")]
+    #[allow(dead_code)]
+    Sqlite(rusqlite::Error),
+}
+
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::Error> for Error {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Sqlite(value)
+    }
+}
+
+#[cfg(feature = "sqlite")]
 fn hasher_task_with_caching(
     db: PathBuf,
     tasks: Receiver<(PathBuf, File, FileTime)>,
     tx: SyncSender<(PathBuf, io::Result<(u64, Hash)>)>,
-) -> rusqlite::Result<()> {
+) -> Result<(), Error> {
+    use db::retry_on_busy;
+
     // each task has a connection to our db
     let db = db::HashDb::try_new(db)?;
     while let Ok((path, file, mtime)) = tasks.recv() {
