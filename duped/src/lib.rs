@@ -30,7 +30,7 @@ mod traits;
 
 #[cfg(feature = "sqlite")]
 pub use db::{Entry, HashDb};
-pub use duplicates::{Duplicates, FileEntry};
+pub use duplicates::{DeduperResult, FileEntry};
 pub use traits::*;
 
 /// File deduplicator.
@@ -61,7 +61,7 @@ impl Deduper {
         mut stopper: impl DeduperStop,
         mut file_filter: impl DeduperFileFilter,
         find_hook: impl DeduperFindHook,
-    ) -> io::Result<Duplicates> {
+    ) -> io::Result<DeduperResult> {
         let hooks = Arc::new(find_hook) as Arc<dyn DeduperFindHook>;
 
         // TODO: what's a good minimum number?
@@ -307,8 +307,8 @@ fn hasher_task_with_caching(
 fn collect(
     rx: Receiver<(PathBuf, io::Result<(u64, Hash)>)>,
     hooks: Arc<dyn DeduperFindHook>,
-) -> Duplicates {
-    let mut duplicates = Duplicates::default();
+) -> DeduperResult {
+    let mut duplicates = DeduperResult::default();
     while let Ok((path, res)) = rx.recv() {
         let (size, hash) = match res {
             Ok(h) => h,

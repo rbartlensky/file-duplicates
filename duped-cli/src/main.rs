@@ -1,4 +1,4 @@
-use duped::{ContentLimit, Deduper, Duplicates, HashDb, NoopFindHook, NoopStopper};
+use duped::{ContentLimit, Deduper, DeduperResult, HashDb, NoopFindHook, NoopStopper};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -132,7 +132,7 @@ fn format_bytes(bytes: u64) -> String {
     format!("{unit:.2}")
 }
 
-fn print_stats(duplicates: Duplicates) {
+fn print_stats(duplicates: DeduperResult) {
     let mut dup_bytes = 0;
     println!("The following duplicate files have been found:");
     for (hash, paths) in duplicates.duplicates() {
@@ -157,7 +157,7 @@ fn remove_file(path: &std::path::Path, db: Option<&HashDb>) {
 
 fn interactive_removal(
     db: Option<&Path>,
-    duplicates: Duplicates,
+    duplicates: DeduperResult,
     mut stdin: impl std::io::BufRead,
 ) -> io::Result<()> {
     let db = db.map(|db| duped::HashDb::try_new(db).unwrap());
@@ -212,7 +212,7 @@ fn interactive_removal(
     Ok(())
 }
 
-fn same_filename_removal(db: Option<&Path>, duplicates: Duplicates) {
+fn same_filename_removal(db: Option<&Path>, duplicates: DeduperResult) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, entries) in duplicates.duplicates() {
         let mut entries = entries.file_entries().to_owned();
@@ -251,7 +251,7 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn paranoid_removal(db: Option<&Path>, duplicates: Duplicates) {
+fn paranoid_removal(db: Option<&Path>, duplicates: DeduperResult) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, entries) in duplicates.duplicates() {
         let mut entries = entries.file_entries().to_owned();
@@ -327,7 +327,7 @@ mod tests {
         tmpdir
     }
 
-    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, Duplicates)) -> Context {
+    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, DeduperResult)) -> Context {
         let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
             .db_path(db.path().to_owned())

@@ -73,12 +73,12 @@ impl FileEntries {
 
 /// A collection of duplicates.
 #[derive(Debug, Default)]
-pub struct Duplicates {
+pub struct DeduperResult {
     /// A list of file entries, grouped by their content's hash.
     hashes: HashMap<Hash, FileEntries>,
 }
 
-impl Duplicates {
+impl DeduperResult {
     /// Add a new entry into the duplicates map.
     pub(crate) fn add_entry(&mut self, hash: Hash, file: FileEntry) {
         self.hashes.entry(hash).or_insert_with(|| FileEntries::new(vec![])).push(file)
