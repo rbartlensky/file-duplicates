@@ -7,17 +7,20 @@ use crate::duplicates::FileEntry;
 
 use blake3::Hash;
 
-use std::{fs, path::Path};
+use std::{fs, ops::ControlFlow, path::Path};
 
-/// [`crate::Deduper`] calls [`Self::should_stop`] before a file is considered for inclusion via [`DeduperFileClassifier`].
-pub trait DeduperStop {
-    /// Return whether [`crate::Deduper`] should stop the current operation and return early.
-    ///
-    /// By default, this method always returns `false`.
-    fn should_stop(&mut self) -> bool {
-        false
-    }
+/// What to do with a file before the file deduper processes it.
+pub enum FileAction {
+    /// Include it in the analysis.
+    Include,
+    /// Exclude it from the analysis.
+    Exclude,
 }
+
+/// The action to take after a file is selected by the deduper.
+///
+/// Callers can end the "main loop" of the deduper sooner, or choose to include/exclude the file.
+pub type FilterAction = ControlFlow<(), FileAction>;
 
 /// [`crate::Deduper`] calls [`Self::include_file`] for every file it encounters while recursing into the
 /// configured roots.
@@ -34,8 +37,8 @@ pub trait DeduperFileFilter {
     /// The [`crate::Deduper`] will skip processing a file if it fails to read its metadata.
     ///
     /// By default, all files are included.
-    fn include_file(&mut self, _path: &Path, _metadata: &fs::Metadata) -> bool {
-        true
+    fn handle_file(&mut self, _path: &Path, _metadata: &fs::Metadata) -> FilterAction {
+        FilterAction::Continue(FileAction::Include)
     }
 }
 
@@ -79,25 +82,25 @@ impl ContentLimit {
         self
     }
 
-    fn include_file_inner(&self, size: u64) -> bool {
+    fn include_file_inner(&self, size: u64) -> FilterAction {
         if let Some(lower) = self.lower_limit {
             if size < lower {
-                return false;
+                return FilterAction::Continue(FileAction::Exclude);
             }
         }
 
         if let Some(upper) = self.upper_limit {
             if size > upper {
-                return false;
+                return FilterAction::Continue(FileAction::Exclude);
             }
         }
 
-        true
+        FilterAction::Continue(FileAction::Include)
     }
 }
 
 impl DeduperFileFilter for ContentLimit {
-    fn include_file(&mut self, _: &Path, metadata: &fs::Metadata) -> bool {
+    fn handle_file(&mut self, _: &Path, metadata: &fs::Metadata) -> FilterAction {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -114,11 +117,6 @@ impl DeduperFileFilter for ContentLimit {
         }
     }
 }
-
-/// A [`DeduperStop`] that never return `true` from `should_stop`.
-pub struct NoopStopper;
-
-impl DeduperStop for NoopStopper {}
 
 /// A [`DeduperFindHook`] that doesn't do anything.
 pub struct NoopFindHook;

@@ -3,10 +3,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use duped::{ContentLimit, Deduper, NoopStopper, NoopFindHook};
+//! use duped::{ContentLimit, Deduper, NoopFindHook};
 //!
 //! let deduper = Deduper::builder(vec!["./".into()]).build();
-//! let stats = deduper.find(NoopStopper, ContentLimit::no_limit(), NoopFindHook).unwrap();
+//! let stats = deduper.find(ContentLimit::no_limit(), NoopFindHook).unwrap();
 //! ```
 
 use blake3::Hash;
@@ -59,7 +59,6 @@ impl Deduper {
     /// Finds and returns duplicated files on disk.
     pub fn find(
         &self,
-        mut stopper: impl DeduperStop,
         mut file_filter: impl DeduperFileFilter,
         find_hook: impl DeduperFindHook,
     ) -> io::Result<DeduperResult> {
@@ -96,11 +95,6 @@ impl Deduper {
         let mut next_worker = 0;
         'main: for root in &self.inner.roots {
             for entry in WalkDir::new(root) {
-                if stopper.should_stop() {
-                    stopped = true;
-                    break 'main;
-                }
-
                 let mut path = match entry {
                     Ok(p) => p.into_path(),
                     Err(e) => {
@@ -119,8 +113,13 @@ impl Deduper {
                     }
                 };
 
-                if !file_filter.include_file(&path, &md) {
-                    continue;
+                match file_filter.handle_file(&path, &md) {
+                    FilterAction::Continue(FileAction::Exclude) => continue,
+                    FilterAction::Continue(FileAction::Include) => {}
+                    FilterAction::Break(_) => {
+                        stopped = true;
+                        break 'main;
+                    }
                 }
 
                 let mtime = FileTime::from_last_modification_time(&md);

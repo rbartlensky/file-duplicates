@@ -1,4 +1,4 @@
-use duped::{ContentLimit, Deduper, DeduperResult, HashDb, NoopFindHook, NoopStopper};
+use duped::{ContentLimit, Deduper, DeduperResult, HashDb, NoopFindHook};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -286,7 +286,7 @@ fn main() -> anyhow::Result<()> {
         None => return Ok(()),
     };
     println!("Directories: {:?}", args.deduper.roots());
-    let stats = args.deduper.find(NoopStopper, args.content_limit, NoopFindHook)?;
+    let stats = args.deduper.find(args.content_limit, NoopFindHook)?;
     match args.remove {
         Some(RemovalKind::Interactive) => {
             interactive_removal(args.deduper.db_path(), stats, std::io::stdin().lock())?
@@ -334,7 +334,7 @@ mod tests {
         let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
             .db_path(db.path().to_owned())
             .build();
-        f(db.path(), stats.find(NoopStopper, ContentLimit::no_limit(), NoopFindHook).unwrap());
+        f(db.path(), stats.find(ContentLimit::no_limit(), NoopFindHook).unwrap());
         Context { dir, db }
     }
 
