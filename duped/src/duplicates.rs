@@ -76,9 +76,16 @@ impl FileEntries {
 pub struct DeduperResult {
     /// A list of file entries, grouped by their content's hash.
     hashes: HashMap<Hash, FileEntries>,
+    /// Whether the user interrupted the find operations.
+    is_partial: bool,
 }
 
 impl DeduperResult {
+    /// Make this instance return true from `is_partial`.
+    pub(crate) fn set_partial(&mut self) {
+        self.is_partial = true;
+    }
+
     /// Add a new entry into the duplicates map.
     pub(crate) fn add_entry(&mut self, hash: Hash, file: FileEntry) {
         self.hashes.entry(hash).or_insert_with(|| FileEntries::new(vec![])).push(file)
@@ -92,7 +99,16 @@ impl DeduperResult {
         &self.hashes
     }
 
+    /// Return an interator of all duplicated file entries.
     pub fn duplicates(&self) -> impl Iterator<Item = (&Hash, &FileEntries)> {
         self.hashes.iter().filter(|(_, entries)| entries.has_duplicates())
+    }
+
+    /// Return `true` if the find operation was stopped prematurely and the results are only partial.
+    ///
+    /// This will be true, for example, if the deduper has files left to process, but [`DeduperStop::should_stop`]
+    /// returned true.
+    pub fn is_partial(&self) -> bool {
+        self.is_partial
     }
 }

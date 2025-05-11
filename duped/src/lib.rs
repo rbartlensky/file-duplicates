@@ -90,10 +90,13 @@ impl Deduper {
         let collector = std::thread::spawn(|| collect(rx, hooks_));
         drop(tx);
 
+        // whether a user action stopped the main loop
+        let mut stopped = false;
         let mut next_worker = 0;
         'main: for root in &self.inner.roots {
             for entry in WalkDir::new(root) {
                 if stopper.should_stop() {
+                    stopped = true;
                     break 'main;
                 }
 
@@ -156,7 +159,10 @@ impl Deduper {
             t.join().expect("failed to join with thread").expect("db operation failed");
         }
 
-        let duplicates = collector.join().expect("failed to join with collector");
+        let mut duplicates = collector.join().expect("failed to join with collector");
+        if stopped {
+            duplicates.set_partial();
+        }
 
         Ok(duplicates)
     }
