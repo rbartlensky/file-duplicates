@@ -3,7 +3,7 @@
 //!
 //! See also: [`NoopStopper`], [`CotentLimit`], and [`NoopFindHook`].
 
-use crate::FileEntry;
+use crate::duplicates::FileEntry;
 
 use blake3::Hash;
 

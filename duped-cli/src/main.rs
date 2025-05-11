@@ -137,9 +137,10 @@ fn print_stats(duplicates: DeduperResult) {
     println!("The following duplicate files have been found:");
     for (hash, paths) in duplicates.duplicates() {
         println!("Hash: {}", hash);
-        for entry in paths.file_entries() {
-            dup_bytes += entry.size();
-            println!("-> size: {}, file: '{}'", format_bytes(entry.size()), entry.path().display());
+        let size = paths.file_size();
+        for entry in paths.iter() {
+            dup_bytes += size;
+            println!("-> size: {}, file: '{}'", format_bytes(size), entry.display());
         }
     }
     println!("Duplicate files take up {} of space on disk.", format_bytes(dup_bytes));
@@ -162,9 +163,10 @@ fn interactive_removal(
 ) -> io::Result<()> {
     let db = db.map(|db| duped::HashDb::try_new(db).unwrap());
     for (hash, entries) in duplicates.duplicates() {
+        let size = entries.file_size();
         println!("Hash: {}", hash);
-        let mut entries = entries.file_entries().to_owned();
-        entries.sort_by(|l, r| l.path().cmp(r.path()));
+        let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
+        entries.sort_by(|l, r| l.cmp(r));
         let mut i = 0;
         let mut j = 1;
         while i < j && j < entries.len() {
@@ -175,10 +177,10 @@ fn interactive_removal(
             while read {
                 print!(
                     "(1) {} (size {})\n(2) {} (size {})\nRemove (s to skip): ",
-                    path1.path().display(),
-                    format_bytes(path1.size()),
-                    path2.path().display(),
-                    format_bytes(path2.size()),
+                    path1.display(),
+                    format_bytes(size),
+                    path2.display(),
+                    format_bytes(size),
                 );
                 if let Err(e) = std::io::stdout().flush() {
                     eprintln!("failed to flush to stdout: {}", e);
@@ -196,12 +198,12 @@ fn interactive_removal(
                         j += 2;
                     }
                     "1" => {
-                        remove_file(path1.path(), db.as_ref());
+                        remove_file(path1, db.as_ref());
                         i = j;
                         j += 1;
                     }
                     "2" => {
-                        remove_file(path2.path(), db.as_ref());
+                        remove_file(path2, db.as_ref());
                         j += 1;
                     }
                     _ => read = true,
@@ -215,16 +217,16 @@ fn interactive_removal(
 fn same_filename_removal(db: Option<&Path>, duplicates: DeduperResult) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, entries) in duplicates.duplicates() {
-        let mut entries = entries.file_entries().to_owned();
-        entries.sort_by(|l, r| l.path().cmp(r.path()));
+        let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
+        entries.sort_by(|l, r| l.cmp(r));
         for dup_path in &entries[1..] {
-            if dup_path.path().file_name() == entries[0].path().file_name() {
+            if dup_path.file_name() == entries[0].file_name() {
                 println!(
                     "Removing '{}' (duplicate of '{}')",
-                    dup_path.path().display(),
-                    entries[0].path().display()
+                    dup_path.display(),
+                    entries[0].display()
                 );
-                remove_file(dup_path.path(), db.as_ref());
+                remove_file(dup_path, db.as_ref());
             }
         }
     }
@@ -254,23 +256,23 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
 fn paranoid_removal(db: Option<&Path>, duplicates: DeduperResult) {
     let db = db.map(|db| HashDb::try_new(db).unwrap());
     for (_, entries) in duplicates.duplicates() {
-        let mut entries = entries.file_entries().to_owned();
-        entries.sort_by(|l, r| l.path().cmp(r.path()));
+        let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
+        entries.sort_by(|l, r| l.cmp(r));
         for dup_path in &entries[1..] {
-            match same_content(entries[0].path(), dup_path.path()) {
+            match same_content(&entries[0], dup_path) {
                 Ok(true) => {
                     println!(
                         "Removing '{}' (duplicate of '{}')",
-                        dup_path.path().display(),
-                        entries[0].path().display()
+                        dup_path.display(),
+                        entries[0].display()
                     );
-                    remove_file(dup_path.path(), db.as_ref());
+                    remove_file(dup_path, db.as_ref());
                 }
                 Ok(false) => {}
                 Err(e) => eprintln!(
                     "failed to compare '{}' to '{}': {:?}",
-                    dup_path.path().display(),
-                    entries[0].path().display(),
+                    dup_path.display(),
+                    entries[0].display(),
                     e
                 ),
             }

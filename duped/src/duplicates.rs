@@ -14,7 +14,7 @@ pub struct FileEntry {
 
 impl FileEntry {
     /// Create a new instance.
-    pub fn new(path: PathBuf, size: u64) -> Self {
+    pub(crate) fn new(path: PathBuf, size: u64) -> Self {
         Self { path, size }
     }
 
@@ -33,25 +33,16 @@ impl FileEntry {
 #[derive(Debug)]
 pub struct FileEntries {
     files: Vec<FileEntry>,
-    file_size: u64,
 }
 
 impl FileEntries {
     /// Create a new instance.
     pub(crate) fn new(files: Vec<FileEntry>) -> Self {
-        let file_size = files.get(0).map(|e| e.size()).unwrap_or(0);
-
-        Self { files, file_size }
+        Self { files }
     }
 
     pub(crate) fn push(&mut self, entry: FileEntry) {
-        if self.files.is_empty() {
-            self.file_size = entry.size();
-            self.files.push(entry);
-        } else {
-            assert_eq!(self.file_size, entry.size());
-            self.files.push(entry);
-        }
+        self.files.push(entry);
     }
 
     pub(crate) fn has_duplicates(&self) -> bool {
@@ -60,14 +51,14 @@ impl FileEntries {
 
     /// The file size shared by all entries.
     ///
-    /// Since `FileEntries` stores all files that were hashed to the same value, each [`FileEntry`] is going to have the same size. This value is returned from this function.
+    /// Since [`FileEntries`] stores all files that were hashed to the same value, each [`FileEntry`] is going to have the same size. This value is returned from this function.
     pub fn file_size(&self) -> u64 {
-        self.file_size
+        self.files.get(0).map(|e| e.size()).unwrap_or(0)
     }
 
-    /// Return all [`FileEntry`]s stored by this instance.
-    pub fn file_entries(&self) -> &[FileEntry] {
-        &self.files
+    /// Return all file paths stored by this instance.
+    pub fn iter(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().map(|e| e.path())
     }
 }
 

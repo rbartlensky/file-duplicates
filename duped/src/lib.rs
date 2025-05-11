@@ -10,6 +10,7 @@
 //! ```
 
 use blake3::Hash;
+use duplicates::FileEntry;
 use filetime::FileTime;
 use std::{
     collections::VecDeque,
@@ -30,7 +31,7 @@ mod traits;
 
 #[cfg(feature = "sqlite")]
 pub use db::{Entry, HashDb};
-pub use duplicates::{DeduperResult, FileEntry};
+pub use duplicates::{DeduperResult, FileEntries};
 pub use traits::*;
 
 /// File deduplicator.
