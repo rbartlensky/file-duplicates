@@ -26,12 +26,14 @@ use walkdir::WalkDir;
 
 #[cfg(feature = "sqlite")]
 mod db;
+mod file;
 mod duplicates;
 mod traits;
 
 #[cfg(feature = "sqlite")]
 pub use db::{Entry, HashDb};
 pub use duplicates::{DeduperResult, FileEntries};
+use file::FilePath;
 pub use traits::*;
 
 /// File deduplicator.
@@ -56,10 +58,51 @@ impl Deduper {
         self.inner.db_path.as_deref()
     }
 
+    /// Collect all files and their metadata into a vector based on a given filter.
+    fn collect_files(&self, mut file_filter: impl DeduperFileFilter) -> (Vec<FilePath>, bool) {
+        let mut stopped = false;
+        let mut files = vec![];
+        'main: for root in &self.inner.roots {
+            for entry in WalkDir::new(root) {
+                let path = match entry {
+                    Ok(p) => p.into_path(),
+                    Err(e) => {
+                        eprintln!("io error occured: {}", e);
+                        continue;
+                    }
+                };
+                if path.is_dir() || path.is_symlink() {
+                    continue;
+                }
+
+                let file_path = match FilePath::try_new(path.clone()) {
+                    Ok(md) => md,
+                    Err(e) => {
+                        eprintln!("io error when reading metadata {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
+
+                match file_filter.handle_file(file_path.path(), file_path.metadata()) {
+                    FilterAction::Continue(FileAction::Exclude) => {}
+                    FilterAction::Continue(FileAction::Include) => {
+                        files.push(file_path);
+                    }
+                    FilterAction::Break(_) => {
+                        stopped = true;
+                        break 'main;
+                    }
+                }
+            }
+        }
+
+        (files, stopped)
+    }
+
     /// Finds and returns duplicated files on disk.
     pub fn find(
         &self,
-        mut file_filter: impl DeduperFileFilter,
+        file_filter: impl DeduperFileFilter,
         find_hook: impl DeduperFindHook,
     ) -> io::Result<DeduperResult> {
         let hooks = Arc::new(find_hook) as Arc<dyn DeduperFindHook>;
@@ -90,69 +133,46 @@ impl Deduper {
         let collector = std::thread::spawn(|| collect(rx, hooks_));
         drop(tx);
 
-        // whether a user action stopped the main loop
-        let mut stopped = false;
+        let (collected_files, stopped) = self.collect_files(file_filter);
+
+        if stopped {
+            return Ok(Default::default());
+        }
+
         let mut next_worker = 0;
-        'main: for root in &self.inner.roots {
-            for entry in WalkDir::new(root) {
-                let mut path = match entry {
-                    Ok(p) => p.into_path(),
-                    Err(e) => {
-                        eprintln!("io error occured: {}", e);
-                        continue;
-                    }
-                };
-                if path.is_dir() || path.is_symlink() {
+        for file_path in collected_files {
+            let mtime = FileTime::from_last_modification_time(&file_path.metadata());
+
+            let mut file = match File::open(file_path.path()) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("failed to open {}: {}", file_path.path().display(), e);
                     continue;
                 }
-                let md = match path.metadata() {
-                    Ok(md) => md,
-                    Err(e) => {
-                        eprintln!("io error when reading metadata {}: {}", path.display(), e);
-                        continue;
-                    }
-                };
+            };
 
-                match file_filter.handle_file(&path, &md) {
-                    FilterAction::Continue(FileAction::Exclude) => continue,
-                    FilterAction::Continue(FileAction::Include) => {}
-                    FilterAction::Break(_) => {
-                        stopped = true;
-                        break 'main;
-                    }
-                }
-
-                let mtime = FileTime::from_last_modification_time(&md);
-
-                let mut file = match File::open(&path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("failed to open {}: {}", path.display(), e);
-                        continue;
-                    }
-                };
-
-                'outer: loop {
-                    for _ in 0..threads.len() {
-                        // we want to have each thread doing something, hence why we go
-                        // round-robin
-                        let tx = &threads[next_worker].1;
-                        next_worker = (next_worker + 1) % num_threads;
-                        match tx.try_send((path, file, mtime)) {
-                            Ok(()) => break 'outer,
-                            // if a thread crashed, we continue on, since we'll
-                            // see the error after we process all files
-                            Err(mpsc::TrySendError::Full((p, f, _)))
+            let mut path = file_path.path().to_owned();
+            'outer: loop {
+                for _ in 0..threads.len() {
+                    // we want to have each thread doing something, hence why we go
+                    // round-robin
+                    let tx = &threads[next_worker].1;
+                    next_worker = (next_worker + 1) % num_threads;
+                    match tx.try_send((path, file, mtime)) {
+                        Ok(()) => break 'outer,
+                        // if a thread crashed, we continue on, since we'll
+                        // see the error after we process all files
+                        Err(mpsc::TrySendError::Full((p, f, _)))
                             | Err(mpsc::TrySendError::Disconnected((p, f, _))) => {
                                 path = p;
                                 file = f;
                             }
-                        }
                     }
-                    std::thread::yield_now();
                 }
+                std::thread::yield_now();
             }
         }
+
         // XXX: why doesn't rust "drop in place" rx if I use `_`?
         for (t, rx) in threads {
             drop(rx);
