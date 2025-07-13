@@ -53,7 +53,7 @@ impl FileEntries {
     ///
     /// Since [`FileEntries`] stores all files that were hashed to the same value, each [`FileEntry`] is going to have the same size. This value is returned from this function.
     pub fn file_size(&self) -> u64 {
-        self.files.get(0).map(|e| e.size()).unwrap_or(0)
+        self.files.first().map(|e| e.size()).unwrap_or(0)
     }
 
     /// Return all file paths stored by this instance.

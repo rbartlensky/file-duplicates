@@ -1,8 +1,9 @@
-use duped::{ContentLimit, Deduper, DeduperResult, HashDb, NoopFindHook};
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use duped::{ContentLimit, Deduper, DeduperResult};
 
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const HELP: &str = "\
 duped 0.1.0 -- Find duplicate files based on their hash.
@@ -65,7 +66,7 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
     let lower_limit = pargs
         .opt_value_from_fn(["-l", "--lower-limit"], |s| byte_unit::Byte::parse_str(s, false))?
         .map(|b| b.as_u64())
-        .unwrap_or_else(|| 1 * 1024);
+        .unwrap_or_else(|| 1024);
 
     // fallback to `$HOME/.config/fdup.db` if `--database` is not present
     let db = match pargs
@@ -146,27 +147,21 @@ fn print_stats(duplicates: DeduperResult) {
     println!("Duplicate files take up {} of space on disk.", format_bytes(dup_bytes));
 }
 
-fn remove_file(path: &std::path::Path, db: Option<&HashDb>) {
+fn remove_file(path: &std::path::Path) {
     if let Err(e) = std::fs::remove_file(path) {
         eprintln!("failed to remove '{}': {}", path.display(), e);
-    } else {
-        if let Some(db) = db {
-            db.remove(path).unwrap();
-        }
     }
 }
 
 fn interactive_removal(
-    db: Option<&Path>,
     duplicates: DeduperResult,
     mut stdin: impl std::io::BufRead,
 ) -> io::Result<()> {
-    let db = db.map(|db| duped::HashDb::try_new(db).unwrap());
     for (hash, entries) in duplicates.duplicates() {
         let size = entries.file_size();
         println!("Hash: {}", hash);
         let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
-        entries.sort_by(|l, r| l.cmp(r));
+        entries.sort();
         let mut i = 0;
         let mut j = 1;
         while i < j && j < entries.len() {
@@ -198,12 +193,12 @@ fn interactive_removal(
                         j += 2;
                     }
                     "1" => {
-                        remove_file(path1, db.as_ref());
+                        remove_file(path1);
                         i = j;
                         j += 1;
                     }
                     "2" => {
-                        remove_file(path2, db.as_ref());
+                        remove_file(path2);
                         j += 1;
                     }
                     _ => read = true,
@@ -214,11 +209,10 @@ fn interactive_removal(
     Ok(())
 }
 
-fn same_filename_removal(db: Option<&Path>, duplicates: DeduperResult) {
-    let db = db.map(|db| HashDb::try_new(db).unwrap());
+fn same_filename_removal(duplicates: DeduperResult) {
     for (_, entries) in duplicates.duplicates() {
         let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
-        entries.sort_by(|l, r| l.cmp(r));
+        entries.sort();
         for dup_path in &entries[1..] {
             if dup_path.file_name() == entries[0].file_name() {
                 println!(
@@ -226,7 +220,7 @@ fn same_filename_removal(db: Option<&Path>, duplicates: DeduperResult) {
                     dup_path.display(),
                     entries[0].display()
                 );
-                remove_file(dup_path, db.as_ref());
+                remove_file(dup_path);
             }
         }
     }
@@ -253,11 +247,10 @@ fn same_content(p1: &Path, p2: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn paranoid_removal(db: Option<&Path>, duplicates: DeduperResult) {
-    let db = db.map(|db| HashDb::try_new(db).unwrap());
+fn paranoid_removal(duplicates: DeduperResult) {
     for (_, entries) in duplicates.duplicates() {
         let mut entries = entries.iter().map(|e| e.to_owned()).collect::<Vec<_>>();
-        entries.sort_by(|l, r| l.cmp(r));
+        entries.sort();
         for dup_path in &entries[1..] {
             match same_content(&entries[0], dup_path) {
                 Ok(true) => {
@@ -266,7 +259,7 @@ fn paranoid_removal(db: Option<&Path>, duplicates: DeduperResult) {
                         dup_path.display(),
                         entries[0].display()
                     );
-                    remove_file(dup_path, db.as_ref());
+                    remove_file(dup_path);
                 }
                 Ok(false) => {}
                 Err(e) => eprintln!(
@@ -280,19 +273,37 @@ fn paranoid_removal(db: Option<&Path>, duplicates: DeduperResult) {
     }
 }
 
+#[derive(Default)]
+struct FindHook {
+    last_round: AtomicUsize,
+    count: AtomicUsize,
+}
+
+impl duped::DeduperFindHook for FindHook {
+    fn files_selected(&self, size: usize) {
+        self.last_round.store(size, Ordering::Relaxed);
+        self.count.store(0, Ordering::Relaxed);
+        print!("0/{size}\r");
+    }
+
+    fn entry_processed(&self, _: duped::blake3::Hash, _: &duped::FileEntry) {
+        let old = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        let n = self.last_round.load(Ordering::Relaxed);
+        print!("{old}/{n}\r");
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args = match parse_args()? {
         Some(args) => args,
         None => return Ok(()),
     };
     println!("Directories: {:?}", args.deduper.roots());
-    let stats = args.deduper.find(args.content_limit, NoopFindHook)?;
+    let stats = args.deduper.find(args.content_limit, FindHook::default())?;
     match args.remove {
-        Some(RemovalKind::Interactive) => {
-            interactive_removal(args.deduper.db_path(), stats, std::io::stdin().lock())?
-        }
-        Some(RemovalKind::SameFilename) => same_filename_removal(args.deduper.db_path(), stats),
-        Some(RemovalKind::Paranoid) => paranoid_removal(args.deduper.db_path(), stats),
+        Some(RemovalKind::Interactive) => interactive_removal(stats, std::io::stdin().lock())?,
+        Some(RemovalKind::SameFilename) => same_filename_removal(stats),
+        Some(RemovalKind::Paranoid) => paranoid_removal(stats),
         None => print_stats(stats),
     }
     Ok(())
@@ -303,13 +314,12 @@ mod tests {
     use super::*;
 
     use std::{fs::File, io::Cursor, path::Path};
-    use tempfile::{NamedTempFile, TempDir};
+    use tempfile::TempDir;
 
     type Files<'a> = [(&'a str, &'a [u8])];
 
     struct Context {
         dir: TempDir,
-        db: NamedTempFile,
     }
 
     fn build_tree(dir: &Path, files: &Files<'_>) {
@@ -329,31 +339,25 @@ mod tests {
         tmpdir
     }
 
-    fn do_remove(dir: TempDir, f: impl FnOnce(&Path, DeduperResult)) -> Context {
-        let db = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
-        let stats = duped::Deduper::builder(vec![dir.path().to_owned()])
-            .db_path(db.path().to_owned())
-            .build();
-        f(db.path(), stats.find(ContentLimit::no_limit(), NoopFindHook).unwrap());
-        Context { dir, db }
+    fn do_remove(dir: TempDir, f: impl FnOnce(DeduperResult)) -> Context {
+        let stats = duped::Deduper::builder(vec![dir.path().to_owned()]).build();
+        f(stats.find(ContentLimit::no_limit(), duped::NoopFindHook).unwrap());
+        Context { dir }
     }
 
     fn do_removal(choice: &[u8]) -> Context {
         let dir = tempfile::tempdir().unwrap();
         build_tree(dir.path(), &[("a", b"a"), ("a2", b"a")]);
-        do_remove(dir, |db, stats| {
+        do_remove(dir, |stats| {
             let input = Cursor::new(choice);
-            interactive_removal(Some(db), stats, input).unwrap();
+            interactive_removal(stats, input).unwrap();
         })
     }
 
     fn do_check(ctx: Context, files: &[(&str, bool)]) {
-        let db = HashDb::try_new(ctx.db.path()).unwrap();
         for (file, exists) in files {
             let file = ctx.dir.path().join(file);
             assert_eq!(file.exists(), *exists, "{:?}", file);
-            // also check if the db got updated properly
-            assert_eq!(db.select(&file).unwrap().is_some(), *exists);
         }
     }
 
@@ -384,7 +388,7 @@ mod tests {
             ("a", &[("a1", b"a1"), ("b", b"b")]),
             ("b", &[("a2", b"a1"), ("b", b"b")]),
         ]);
-        let ctx = do_remove(dir, |db, stats| same_filename_removal(Some(db), stats));
+        let ctx = do_remove(dir, same_filename_removal);
         let files = [("a/a1", true), ("a/b", true), ("b/a2", true), ("b/b", false)];
         do_check(ctx, &files);
     }
@@ -395,7 +399,7 @@ mod tests {
             ("a", &[("a1", b"a1"), ("b", b"b")]),
             ("b", &[("a2", b"a1"), ("b", b"b")]),
         ]);
-        let ctx = do_remove(dir, |db, stats| paranoid_removal(Some(db), stats));
+        let ctx = do_remove(dir, paranoid_removal);
         let files = [("a/a1", true), ("a/b", true), ("b/a2", false), ("b/b", false)];
         do_check(ctx, &files);
     }

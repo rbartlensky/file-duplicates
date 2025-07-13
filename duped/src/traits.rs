@@ -44,9 +44,14 @@ pub trait DeduperFileFilter {
 
 /// [`crate::Deduper`] calls [`Self::entry_processed`] for every file it hashed successfully.
 pub trait DeduperFindHook: Send + Sync + 'static {
+    /// Called on start to send the implementor the number of files that are going to be processed.
+    fn files_selected(&self, _size: usize) {}
+
     /// Hook that is called when the [`crate::Deduper`] finished hashing a file.
     ///
     /// Users are encouraged to use this method to get updates on the progress of [`crate::Deduper::find`].
+    ///
+    /// Note: `hash` is not necessarily the hash of the entire contents of `entry`. It may be a partial hash.
     ///
     /// The default implementation does nothing.
     fn entry_processed(&self, _hash: Hash, _entry: &FileEntry) {}
@@ -106,14 +111,14 @@ impl DeduperFileFilter for ContentLimit {
             use std::os::unix::fs::MetadataExt;
 
             let size = metadata.size();
-            return self.include_file_inner(size);
+            self.include_file_inner(size)
         }
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
 
             let size = metadata.file_size();
-            return self.include_file_inner(size);
+            self.include_file_inner(size)
         }
     }
 }

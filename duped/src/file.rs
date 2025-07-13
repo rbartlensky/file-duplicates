@@ -1,3 +1,5 @@
+use crate::FileEntry;
+
 use std::{
     fs::Metadata,
     path::{Path, PathBuf},
@@ -24,5 +26,10 @@ impl FilePath {
     /// Gets the metadata of a particular file.
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+
+    /// Converts this instance into a [`FileEntry`].
+    pub fn to_file_entry(&self) -> FileEntry {
+        FileEntry::new(self.path.clone(), self.metadata.len())
     }
 }
