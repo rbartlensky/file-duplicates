@@ -11,7 +11,7 @@
 
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         mpsc::{self, Receiver, SyncSender},
         Arc,
@@ -47,11 +47,6 @@ impl Deduper {
     /// Return the configured roots.
     pub fn roots(&self) -> &[PathBuf] {
         &self.inner.roots
-    }
-
-    /// Return the configured database path.
-    pub fn db_path(&self) -> Option<&Path> {
-        self.inner.db_path.as_deref()
     }
 
     /// Collect all files and their metadata into a vector based on a given filter.
@@ -184,8 +179,6 @@ struct DeduperInner {
     /// If the size of the file is under `lower_limit` bytes, it is not taken
     /// into account.
     lower_limit: Option<u64>,
-    /// Where to store the hash database.
-    db_path: Option<PathBuf>,
 }
 
 /// A builder for [`Deduper`].
@@ -196,7 +189,7 @@ pub struct DeduperBuilder {
 impl DeduperBuilder {
     /// Create a new instance of the builder with a list of roots.
     pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self { inner: DeduperInner { roots, lower_limit: None, db_path: None } }
+        Self { inner: DeduperInner { roots, lower_limit: None } }
     }
 
     /// Set the lower file size limit, in bytes.
@@ -204,15 +197,6 @@ impl DeduperBuilder {
     /// Files that are smaller than `limit` will be skipped (not checked for duplication).
     pub fn lower_limit(mut self, limit: u64) -> Self {
         self.inner.lower_limit = Some(limit);
-
-        self
-    }
-
-    /// Set the sqlite database path.
-    ///
-    /// If the path doesn't exist, the deduper will initialize an new sqlite database at that path.
-    pub fn db_path(mut self, db_path: PathBuf) -> Self {
-        self.inner.db_path = Some(db_path);
 
         self
     }

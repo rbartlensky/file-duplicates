@@ -17,7 +17,6 @@ FLAGS:
   --remove-paranoid            Remove duplicate files, but also check if they have the same content.
 OPTIONS:
   -l, --lower-limit LIMIT  Files whose size is under <LIMIT> are ignored [default: 1 MiB].
-  --database        PATH   Path to the hash database [default: $HOME/.config/fdup.db].
 ARGS:
   <PATH...>                Where to start the search from (can be specified multiple times).
 ";
@@ -68,15 +67,6 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
         .map(|b| b.as_u64())
         .unwrap_or_else(|| 1024);
 
-    // fallback to `$HOME/.config/fdup.db` if `--database` is not present
-    let db = match pargs
-        .opt_value_from_os_str::<_, _, &str>("--database", |s| Ok(PathBuf::from(s)))?
-    {
-        Some(db) => db,
-        None => home::home_dir().map(|h| h.join(".config").join("fdup.db")).ok_or(
-            pico_args::Error::OptionWithoutAValue("'--database' is required if $HOME is not set"),
-        )?,
-    };
     let remaining = pargs.finish();
     let mut remove = None;
     let mut roots: Vec<PathBuf> = vec![];
@@ -121,7 +111,7 @@ fn parse_args() -> Result<Option<Args>, pico_args::Error> {
             cause: "'<PATH>' argument is missing".into(),
         })
     } else {
-        let deduper = Deduper::builder(roots).db_path(db).build();
+        let deduper = Deduper::builder(roots).build();
         let content_limit = ContentLimit::no_limit().with_lower_limit(lower_limit);
         Ok(Some(Args { deduper, remove, content_limit }))
     }
